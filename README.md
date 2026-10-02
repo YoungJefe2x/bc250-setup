@@ -17,6 +17,7 @@ sudo sh bc250-setup.sh
   5) Controllers off        [not installed]
   6) Decky plugins          [not installed]
   7) Android TV (Waydroid)  [not installed]
+  8) BC-250 Control Center  [not installed]
 
   a) Install all
   t) Test HDMI-CEC
@@ -126,6 +127,20 @@ that virtual pad won't exist and Android will see no controller at all.
 
 Still manual: adding `~/waydroid-tv.sh` to Steam as a non-Steam game, and
 Button Mapper inside Android for the Xbox button.
+
+### 8. BC-250 Control Center
+
+Installs [movacx/bc250-control-center](https://github.com/movacx/bc250-control-center)
+from the AUR (`bc250-control-center-git`) — system monitoring, GPU control,
+CPU tuning, compute units and fan control in one desktop app.
+
+Needs an AUR helper; offers to install `paru` if none is found. The build
+runs as the invoking user, since AUR helpers refuse to run as root, so it
+asks for a password partway through.
+
+After installing, launch it and choose **Prepare dependencies** on its
+dashboard — it detects the distro and pulls the governor, fan and CU tools
+itself. Revert removes the package but leaves those dependencies alone.
 
 ## Notes
 

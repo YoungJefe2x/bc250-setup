@@ -11,6 +11,7 @@
 #   ctrl    disconnect BT controllers on poweroff
 #   decky   Decky plugins installed from local zip files
 #   atv     Android TV (Waydroid) launchable from game mode
+#   ctlcenter  BC-250 Control Center (AUR) — GPU/CPU/fan tuning
 #
 # Every component can be installed and reverted independently. What has been
 # installed is recorded under /var/lib/bc250-setup so revert knows what to undo.
@@ -706,6 +707,69 @@ atv_revert() {
     say "Removed. Delete the Android TV shortcut from Steam by hand."
 }
 
+# ========================================================= CONTROL CENTER ===
+
+# movacx/bc250-control-center — system monitoring, GPU/CPU tuning, CU and fan
+# control in one desktop app. Shipped on Arch as an AUR package, so this needs
+# an AUR helper; CachyOS ships paru.
+ctlcenter_install() {
+    say "BC-250 Control Center"
+
+    helper=""
+    for h in paru yay pikaur trizen; do
+        command -v "$h" >/dev/null 2>&1 && { helper="$h"; break; }
+    done
+
+    if [ -z "$helper" ]; then
+        warn "No AUR helper found (paru, yay, ...)."
+        if confirm "Install paru from the CachyOS repos?"; then
+            pacman -S --needed --noconfirm paru || {
+                warn "paru is not in the configured repos."
+                warn "Install an AUR helper yourself, then run this option again."
+                return 1
+            }
+            helper=paru
+        else
+            return 1
+        fi
+    fi
+    say "Using $helper"
+
+    # AUR helpers refuse to run as root; drop back to the invoking user, who
+    # will be asked for a password when the helper calls sudo to install.
+    if [ "$REAL_USER" = "root" ]; then
+        warn "Cannot build AUR packages as root."
+        warn "Run this script with sudo from your normal account, not a root shell."
+        return 1
+    fi
+
+    say "Building bc250-control-center-git as $REAL_USER (it will ask for a password)"
+    if ! runuser -u "$REAL_USER" -- "$helper" -S --needed bc250-control-center-git; then
+        warn "Build failed. Try it by hand to see the error:"
+        warn "  $helper -S bc250-control-center-git"
+        return 1
+    fi
+
+    mark ctlcenter
+    say "Done. Launch it from the desktop, then pick \"Prepare dependencies\""
+    say "on its dashboard — it installs the governor/fan/CU tools it needs."
+}
+
+ctlcenter_revert() {
+    say "Removing BC-250 Control Center"
+    if pacman -Qq bc250-control-center-git >/dev/null 2>&1; then
+        pacman -Rns --noconfirm bc250-control-center-git || \
+            warn "removal failed; try: sudo pacman -Rns bc250-control-center-git"
+    else
+        warn "bc250-control-center-git is not installed."
+    fi
+    warn "Anything its \"Prepare dependencies\" step installed (oberon-governor,"
+    warn "nct6687d-dkms and friends) is left alone — remove those by hand if you"
+    warn "want them gone."
+    unmark ctlcenter
+    say "Removed."
+}
+
 # ================================================================= DECKY ====
 
 DECKY_DIR="$REAL_HOME/homebrew/plugins"
@@ -845,6 +909,7 @@ install_all() {
     power_install || warn "power failed"
     guide_install || warn "guide failed"
     ctrl_install  || warn "controllers failed"
+    ctlcenter_install || warn "control center failed"
     atv_install   || warn "android tv failed"
     decky_install || warn "decky skipped"
 }
@@ -861,7 +926,8 @@ revert_menu() {
   5) Controllers off        [$(status ctrl)]
   6) Decky plugins          [$(status decky)]
   7) Android TV (Waydroid)  [$(status atv)]
-  8) Revert everything
+  8) BC-250 Control Center  [$(status ctlcenter)]
+  9) Revert everything
   b) Back
 MENU
         printf '\nChoice: '
@@ -874,7 +940,9 @@ MENU
             5) ctrl_revert  || true; pause ;;
             6) decky_revert || true; pause ;;
             7) atv_revert   || true; pause ;;
-            8) if confirm "Revert everything?"; then
+            8) ctlcenter_revert || true; pause ;;
+            9) if confirm "Revert everything?"; then
+                   ctlcenter_revert || true
                    atv_revert   || true
                    decky_revert || true
                    ctrl_revert  || true
@@ -902,6 +970,7 @@ main_menu() {
   5) Controllers off        [$(status ctrl)]
   6) Decky plugins          [$(status decky)]
   7) Android TV (Waydroid)  [$(status atv)]
+  8) BC-250 Control Center  [$(status ctlcenter)]
 
   a) Install all
   t) Test HDMI-CEC
@@ -918,6 +987,7 @@ MENU
             5) ctrl_install  || true; pause ;;
             6) decky_install || true; pause ;;
             7) atv_install   || true; pause ;;
+            8) ctlcenter_install || true; pause ;;
             a|A) install_all; pause ;;
             t|T) cec_test || true; pause ;;
             r|R) revert_menu ;;
