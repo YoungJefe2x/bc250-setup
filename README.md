@@ -161,8 +161,7 @@ itself. Revert removes the package but leaves those dependencies alone.
 ## Notes
 
 - Run with `sudo`, not from a root shell. It reads `SUDO_USER` to find the
-  real user, so it works unchanged on a box where the account is `bc250`
-  rather than `edgar`.
+  real user, so it works unchanged whatever the account is called.
 - State lives in `/var/lib/bc250-setup`, so revert only undoes what the
   script actually did.
 - `systemctl stop cec.service` also turns the TV off, since `ExecStop` fires
