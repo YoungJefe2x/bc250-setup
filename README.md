@@ -113,6 +113,22 @@ installing by hand.
 No credentials are baked in. Discord Deck stores its client ID and secret in
 Decky's settings dir at runtime (mode 600), not in the plugin.
 
+Installing Discord Deck offers to set those credentials up front, writing
+`~/homebrew/settings/Discord Deck/config.json` directly so you don't have to
+type two long strings into a text field with a controller. It prints the
+steps and skips if a config already exists:
+
+1. <https://discord.com/developers/applications>
+2. New Application, any name
+3. OAuth2 in the sidebar
+4. Under Redirects, add `http://localhost`, then Save Changes
+5. Copy the Client ID
+6. Reset Secret, copy that
+
+Discord has no anonymous path for this — the client ID identifies the app to
+the local RPC socket and the secret is required to exchange the auth code for
+a token, so every install needs its own application.
+
 ### 7. Android TV (Waydroid)
 
 Installs `waydroid`, `cage` and `wlr-randr`, initialises a WayDroid-ATV

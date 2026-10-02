@@ -785,9 +785,58 @@ embedded_label() {
     esac
 }
 
+# Discord Deck needs a Discord application's client ID and secret. Typing two
+# long strings into a text field with a controller is miserable, so offer to
+# write them straight into the plugin's settings file here instead.
+DISCORD_SETTINGS_DIR="$REAL_HOME/homebrew/settings/Discord Deck"
+
+discord_credentials() {
+    _cfg="$DISCORD_SETTINGS_DIR/config.json"
+
+    if [ -f "$_cfg" ] && grep -q '"client_secret"[[:space:]]*:[[:space:]]*"[^"]' "$_cfg" 2>/dev/null; then
+        say "Discord credentials are already set — leaving them alone."
+        return 0
+    fi
+
+    echo
+    echo "  Discord Deck needs its own Discord application."
+    echo "  Takes about a minute, on a phone or laptop:"
+    echo
+    echo "    1. Open  https://discord.com/developers/applications"
+    echo "    2. New Application -> give it any name -> Create"
+    echo "    3. OAuth2 (left sidebar)"
+    echo "    4. Under Redirects, Add Redirect:  http://localhost"
+    echo "       then Save Changes at the bottom"
+    echo "    5. Copy the CLIENT ID from that page"
+    echo "    6. Next to Client Secret, press Reset Secret, then copy it"
+    echo
+    echo "  Leave either blank to skip and enter them in the plugin later."
+    echo
+
+    printf '  Client ID: '
+    read -r _cid
+    printf '  Client secret: '
+    read -r _csec
+
+    if [ -z "$_cid" ] || [ -z "$_csec" ]; then
+        warn "Skipped — set them in the plugin's settings when you're ready."
+        return 0
+    fi
+
+    mkdir -p "$DISCORD_SETTINGS_DIR"
+    cat > "$_cfg" << JSON
+{
+  "client_id": "$_cid",
+  "client_secret": "$_csec"
+}
+JSON
+    chmod 600 "$_cfg"
+    chown -R "$REAL_USER" "$REAL_HOME/homebrew/settings" 2>/dev/null || true
+    say "Saved. The plugin will pick them up; press Authorize on first launch."
+}
+
 # Unpack one zip into DECKY_DIR, recording every plugin folder it contained.
-install_plugin_zip() {
-    _zip="$1"
+install_plugin_zip() {    _zip="$1"
     mkdir -p "$DECKY_DIR"
     _tmp=$(mktemp -d)
     if ! unzip -q -o "$_zip" -d "$_tmp"; then
@@ -832,7 +881,10 @@ decky_install() {
         case "$_ans" in
             y|Y|yes|YES)
                 if embed_payload "$_p" "$_stage/$_p.zip"; then
-                    install_plugin_zip "$_stage/$_p.zip" && _any=1
+                    if install_plugin_zip "$_stage/$_p.zip"; then
+                        _any=1
+                        [ "$_p" = "discord-deck" ] && discord_credentials
+                    fi
                 else
                     warn "could not unpack the bundled $_p"
                 fi
