@@ -316,7 +316,6 @@ case "$1" in
         # address appears and we claim the input, so the box still lands on
         # screen by itself without anyone touching the TV's source button.
         _was=0
-        _n=0
         # Clear a pause left behind by an interrupted `cec-tv off`.
         resume_bc250_cec
         while :; do
@@ -331,19 +330,12 @@ case "$1" in
                 ensure_registered
                 cec-ctl -d "$DEV" --active-source phys-addr="$_pa" >/dev/null 2>&1
             fi
-            # No address means the link is probably sitting on the adapter's
-            # own fallback EDID, picked up while the display was off. It does
-            # not re-read on its own, so the address stays invalid even after
-            # the display is switched back on. A re-detect is what makes it
-            # read the real EDID; keep nudging until one sticks.
-            if [ "$_now" = 0 ]; then
-                _n=$((_n + 1))
-                if [ $((_n % 3)) -eq 0 ]; then
-                    force_hotplug >/dev/null 2>&1 || true
-                fi
-            else
-                _n=0
-            fi
+            # No re-detect here, deliberately. Each one blanks the screen for
+            # about a second, and it cannot fix this anyway: the GPU re-reads
+            # EDID from the adapter, while it is the adapter that is holding a
+            # stale fallback it cached from its own power-up. Only the adapter
+            # losing power makes it read the display again. Nudging just made
+            # a working picture flicker every 15s for nothing.
             _was=$_now
             sleep 5
         done
