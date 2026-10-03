@@ -34,106 +34,41 @@ time rather than `a` until you know each works on that box.
 
 ### 1. HDMI-CEC TV control
 
-TV sleeps when the board powers off, wakes and switches to this input on
-boot. Installs `cec-tv` (`on` / `off` / `cycle` / `status` / `monitor`) and
-`cec.service`.
+The TV sleeps when the board powers off. Waking it and switching the input
+are manual — `cec-tv on`, `cec-tv off`, `cec-tv cycle` — or bound to the
+controller's guide button with component 4.
+
+There is deliberately no boot-time wake. It needs the display to answer EDID
+while it is in standby, and not every set does: the adapter is powered from
+the DisplayPort connector, so a full poweroff wipes the EDID it was holding,
+and on the next boot a silent display leaves the CEC physical address at
+`f.f.f.f`. No logical address can be claimed and nothing can be transmitted,
+so there is no wake command to send. It works on sets that stay reachable in
+standby and cannot work on those that do not, which is not something software
+can decide.
 
 Two variants, chosen automatically:
 
 - **With `bc250-cec` present** (it ships with the BC-250 kernel packages):
-  hooks only. `bc250-cec` already registers the adapter and answers the TV,
-  so a second follower would fight it for `/dev/cec0` and the logical
-  address would flap.
-- **Without it:** the full version, running `cec-follower` itself.
+  only the poweroff standby is installed. `bc250-cec` already registers the
+  adapter and answers the TV, and a second follower would fight it for
+  `/dev/cec0`, making the logical address flap.
+- **Without it:** `cec.service` runs `cec-follower` so the TV's queries get
+  answered, plus the same standby unit.
 
-Waking at boot waits for the bus rather than firing on a timer. Straight
-after a cold boot the DP link is still settling and the physical address
-reads back as `f.f.f.f`; an adapter in that state cannot claim a logical
-address, so anything sent then goes nowhere. `boot-on` polls for up to 60s
-until the address is valid, then sends full wake sequences.
+`cec-tv off` pauses `bc250-cec` first and resumes it afterwards, because its
+replug re-announces the physical address and a Samsung reads a source
+appearing as "wake up" — undoing the standby a second later.
 
-Nothing here writes `trigger_hotplug`. Each re-detect blanks the screen for
-about a second, and on this hardware not one ever produced a valid address —
-the GPU re-reads EDID from the adapter, while it is the adapter holding a
-stale fallback cached at its own power-up. All they did was make a working
-picture flash on and off.
-
-The boot unit is wanted by `multi-user.target`, not `graphical.target`. With
-the TV off the adapter hands the driver a fallback EDID, and the graphical
-session can fail to come up on that — which would stop the very service meant
-to turn the TV on from ever running.
-
-It carries no `After=` at all. Ordering after `bc250-cec.service` closes a
-loop, since that service is itself `After=graphical.target`; ordering after
-the target that wants you is the other way to build one. systemd breaks an
-ordering cycle by deleting one of the jobs — ours — and the symptom is an
-empty journal and a service that silently never ran.
-
-The install also clears every `*.target.wants` symlink for the unit before
-enabling. `systemctl enable` adds links but never removes stale ones, so a
-`graphical.target.wants/cec.service` left over from an older version keeps
-rebuilding that cycle no matter what the unit file says. The `t` check
-reports both the stale link and a cycle recorded this boot.
-
-### When the display cannot be woken
-
-A display that stops answering DDC in standby cannot be woken over CEC at
-all: the physical address never becomes valid, so there is no logical address
-and nothing to transmit. `cec-watch.service` covers that case from the other
-side. It polls for the address and claims the
-input the moment one appears. The boot wake runs once per boot, marked in
-`/run`, so a service restart goes straight to watching rather than repeating
-the whole 60s wait.
-
-That is also why the adapter matters more than the TV here. If the board
-powers on while the display is off, the adapter caches a fallback EDID and
-keeps serving it for as long as it stays powered, so the CEC address stays
-invalid even after the display is switched back on and showing a picture. The box still lands on screen without anyone
-reaching for the TV's source button.
-
-Whether the CEC wake itself can work depends on the display. The adapter is powered
-from the DisplayPort connector, so a full poweroff kills it; on the next boot
-it has to read EDID afresh from a display that is in standby. A set that does
-not answer leaves the physical address at `f.f.f.f`, no logical address can be
-claimed, and nothing can be transmitted — the journal says so plainly. Waking
-such a set over CEC from a cold boot is not possible; its own remote is the
-only way in. A set that stays reachable in standby works fine, which is why
-`cec-tv off` then `cec-tv on` with the board still running is a different
-case entirely.
-
-Each sequence is Image View On, an Active Source broadcast, and the remote's
-power-on key. Image View On alone is not enough on many sets — Samsung wants
-the source to claim the path as well as ask for power, and some models only
-act on the remote key.
-
-The reported power state is not trusted as proof: a Samsung in standby
-answers `GIVE_DEVICE_POWER_STATUS` with `on`, which is how an earlier version
-came to send one Image View On, believe it had worked, and leave the TV dark.
-Two full sequences always go out; only from the third does a reported `on`
-end it early, for the case where the set really is already awake. It
-re-registers between rounds because the link drops and returns as a set
-wakes, which clears the logical address. Progress goes to the journal:
-`journalctl -b -u cec.service`.
-
-Standby at poweroff is a separate unit (`cec-standby.service`) started as
-`poweroff.target` is reached, not an `ExecStop` on the boot unit. By that
-point every normal service is already stopped, `bc250-cec` included, so
-nothing is left to replug the link — and because the unit is wanted only by
-`poweroff.target`/`halt.target`, a reboot never triggers it. An `ExecStop`
-hook failed on both counts: it ran while `bc250-cec` was still live, and its
-`systemctl stop bc250-cec` call could block inside the shutdown transaction
-until the stop timeout killed it, so the standby never went out.
-
-`bc250-cec` replugs the DP link whenever the display changes power state.
-That replug re-announces the physical address, and a Samsung reads a source
-appearing as "wake up" — so a standby is undone a second later. `cec-tv`
-pauses `bc250-cec` around a deliberate power-off and resumes it on the next
-power-on, so its link-drop workaround stays active the rest of the time.
+Standby at poweroff is its own unit, started as `poweroff.target` is reached
+rather than hung off an `ExecStop`. By that point every normal service is
+stopped, `bc250-cec` included, so nothing is left to replug the link; and
+because it is wanted only by `poweroff.target`/`halt.target`, a reboot never
+triggers it.
 
 Needs a DP-to-HDMI adapter that tunnels CEC. Most cheap active ones do not.
-Confirmed working: UGREEN 8K DP 1.4 → HDMI 2.1 (Realtek RTD2173). The
-Chrontel CH7218 is also confirmed. Check with `cec-ctl --list-devices`
-before bothering.
+Confirmed working: UGREEN 8K DP 1.4 to HDMI 2.1, and Chrontel CH7218 based
+units. Check with `cec-ctl --list-devices` before bothering.
 
 ### 2. LED strip daemon
 

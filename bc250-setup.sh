@@ -133,7 +133,7 @@ cec_install() {
 #!/bin/sh
 # cec-tv — control the TV over HDMI-CEC
 # usage: cec-tv {register|on|off|cycle [secs]|status|monitor}
-#   (boot-on, watch and poweroff-standby are for the systemd units)
+#   (poweroff-standby is for cec-standby.service, not for typing)
 DEV=/dev/cec0
 OSD="CachyOS"
 
@@ -181,42 +181,24 @@ tv_power_state() {
         awk '/pwr-state/ {print $2; exit}'
 }
 
-# Wait for the adapter to exist AND for the TV to have handed us a physical
-# address. Straight after a cold boot the DP link is still settling and the
-# address reads back as f.f.f.f; an adapter in that state cannot claim a
-# logical address, so anything sent at that point goes nowhere. This is what
-# a fixed `sleep 3` got wrong.
+# Wait for the adapter to exist and for the TV to have handed us a physical
+# address. Straight after a link change the address reads back as f.f.f.f, and
+# an adapter in that state cannot claim a logical address, so anything sent
+# then goes nowhere.
 wait_for_bus() {
-    _limit=${1:-60}
+    _limit=${1:-15}
     _n=0
-    _last=""
     while [ "$_n" -lt "$_limit" ]; do
         if [ -e "$DEV" ]; then
-            _pa=$(get_pa)
-            case "$_pa" in
-                ""|f.f.f.f) _seen="address ${_pa:-unreadable}" ;;
-                *) echo "cec-tv: bus ready after ${_n}s, physical address $_pa"
-                   return 0 ;;
+            case "$(get_pa)" in
+                ""|f.f.f.f) : ;;
+                *) return 0 ;;
             esac
-        else
-            _seen="no $DEV yet"
         fi
-        # Say what is actually being seen, but only when it changes.
-        if [ "$_seen" != "$_last" ]; then
-            echo "cec-tv: waiting — $_seen"
-            _last="$_seen"
-        fi
-        # No trigger_hotplug nudges here. Every one blanks the screen for about
-        # a second, and on this hardware not one ever produced a valid address:
-        # the GPU re-reads EDID from the adapter, while it is the adapter that
-        # holds a stale fallback cached at its own power-up. All they did was
-        # make a working picture flash on and off.
         _n=$((_n + 1))
         sleep 1
     done
-    echo "cec-tv: no usable CEC address after ${_limit}s — giving up" >&2
-    echo "cec-tv: the display is not answering while in standby, so CEC cannot" >&2
-    echo "cec-tv: reach it from a cold boot. Wake it with its remote." >&2
+    echo "cec-tv: no usable CEC address after ${_limit}s" >&2
     return 1
 }
 
@@ -285,54 +267,6 @@ case "$1" in
         ensure_registered
         cec-ctl -d "$DEV" --to 0 --standby >/dev/null 2>&1
         ;;
-    boot-on)
-        # Cold boot: the adapter and the link are still coming up, so be
-        # patient here rather than firing once and hoping.
-        wait_for_bus 60 || exit 0
-        tv_on
-        ;;
-    boot-watch)
-        # One wake attempt, then settle into watching. Both in one
-        # long-running service so neither can hold up boot. The attempt is
-        # marked done in /run so a service restart goes straight to watching
-        # instead of running the whole 60s wait again.
-        if [ ! -e /run/cec-tv.boot-done ]; then
-            : > /run/cec-tv.boot-done 2>/dev/null || true
-            "$0" boot-on || true
-        fi
-        exec "$0" watch
-        ;;
-    watch)
-        # For displays that go silent in standby: there is no address to send
-        # to at boot, so nothing can wake them. Sit and watch instead. The
-        # moment the display comes back — its own remote, usually — the
-        # address appears and we claim the input, so the box still lands on
-        # screen by itself without anyone touching the TV's source button.
-        _was=0
-        # Clear a pause left behind by an interrupted `cec-tv off`.
-        resume_bc250_cec
-        while :; do
-            _pa=$(get_pa 2>/dev/null)
-            case "$_pa" in
-                ""|f.f.f.f) _now=0 ;;
-                *)          _now=1 ;;
-            esac
-            if [ "$_now" = 1 ] && [ "$_was" = 0 ]; then
-                echo "cec-tv: display came back at $_pa — claiming input"
-                sleep 3
-                ensure_registered
-                cec-ctl -d "$DEV" --active-source phys-addr="$_pa" >/dev/null 2>&1
-            fi
-            # No re-detect here, deliberately. Each one blanks the screen for
-            # about a second, and it cannot fix this anyway: the GPU re-reads
-            # EDID from the adapter, while it is the adapter that is holding a
-            # stale fallback it cached from its own power-up. Only the adapter
-            # losing power makes it read the display again. Nudging just made
-            # a working picture flicker every 15s for nothing.
-            _was=$_now
-            sleep 5
-        done
-        ;;
     poweroff-standby)
         # Run by cec-standby.service as poweroff.target is reached — i.e. after
         # every normal service has already been stopped, bc250-cec included.
@@ -367,10 +301,10 @@ SCRIPT
     # the logical address flap. In that case ours only does the boot wake.
     # When bc250-cec is present it already registers the adapter and answers
     # the TV, so a second follower of ours would fight it for /dev/cec0 --
-    # that is what made the logical address flap. In that case cec-watch
-    # alone does everything we need and cec.service is not installed at all.
+    # that is what made the logical address flap. Nothing of ours is needed
+    # at boot in that case; standby at poweroff is a separate unit.
     if systemctl list-unit-files 2>/dev/null | grep -q '^bc250-cec'; then
-        say "bc250-cec detected — no follower of our own"
+        say "bc250-cec detected — it handles the bus; no boot unit of our own"
         rm -f /etc/systemd/system/cec.service
     else
         cat > /etc/systemd/system/cec.service << 'UNIT'
@@ -381,8 +315,6 @@ Description=HDMI-CEC follower
 Type=simple
 ExecStartPre=/usr/local/bin/cec-tv register
 ExecStart=/usr/bin/cec-follower -d /dev/cec0
-# No ExecStartPost=boot-on: that holds the start job for as long as the wake
-# takes, which blocks boot. cec-watch.service does the boot wake instead.
 Restart=on-failure
 RestartSec=5
 
@@ -390,23 +322,6 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
     fi
-
-    # A display that goes silent in standby cannot be woken over CEC at all,
-    # so the next best thing is to notice the moment it comes back and claim
-    # the input then. Long-running, hence its own unit.
-    cat > /etc/systemd/system/cec-watch.service << 'UNIT'
-[Unit]
-Description=Claim the TV input when the display reappears
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/cec-tv boot-watch
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-UNIT
 
     # Standby is its own unit, started as poweroff.target is reached rather
     # than hung off the boot unit's ExecStop. Three reasons that matters:
@@ -447,7 +362,6 @@ UNIT
     if [ -e /etc/systemd/system/cec.service ]; then
         systemctl enable --now cec.service || warn "check: systemctl status cec.service"
     fi
-    systemctl enable --now cec-watch.service || warn "could not start cec-watch.service"
     systemctl enable cec-standby.service || warn "could not enable cec-standby.service"
 
     if journalctl -b -q --no-pager 2>/dev/null | grep -q "ordering cycle.*cec.service"; then
@@ -455,7 +369,10 @@ UNIT
         warn "The links are fixed now, but reboot before judging the result."
     fi
     mark cec
-    say "Done. Manual control: cec-tv on | cec-tv off | cec-tv cycle"
+    say "Done. The TV sleeps at poweroff; wake and input switching are manual:"
+    say "  cec-tv on | cec-tv off | cec-tv cycle"
+    say "There is no boot-time wake: that needs the display to answer EDID"
+    say "while it is in standby, which not every set does."
 }
 
 # Diagnose the CEC chain and, if asked, power-cycle the TV to prove it works.
@@ -501,8 +418,6 @@ cec_test() {
         fi
         _sb=$(systemctl is-enabled cec-standby.service 2>/dev/null || echo missing)
         say "cec-standby.service (poweroff): $_sb"
-        _w=$(systemctl is-active cec-watch.service 2>/dev/null || echo inactive)
-        say "cec-watch.service (input claim): $_w"
         case "$_sb" in
             enabled) : ;;
             *) warn "The standby unit is not enabled — the TV will not sleep on"
@@ -1299,7 +1214,6 @@ show_status() {
     if [ -e /etc/systemd/system/cec.service ]; then
         _unit_line "cec.service" cec.service "$_w"
     fi
-    _unit_line "cec-watch" cec-watch.service "$_w"
     _unit_line "cec-standby" cec-standby.service "$_w"
     if [ -n "$(systemctl list-unit-files bc250-cec.service --no-legend 2>/dev/null)" ]; then
         if systemctl is-active --quiet bc250-cec >/dev/null 2>&1; then
