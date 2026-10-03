@@ -50,11 +50,21 @@ Waking at boot waits for the bus rather than firing on a timer. Straight
 after a cold boot the DP link is still settling and the physical address
 reads back as `f.f.f.f`; an adapter in that state cannot claim a logical
 address, so anything sent then goes nowhere. `boot-on` polls for up to 60s
-until the address is valid, sends Image View On up to four times, and checks
-the TV's reported power state between attempts — a set in standby often
-ignores the first one while its own HDMI receiver comes up. It re-registers
-before claiming active source, because the link usually drops and returns as
-the TV wakes. Progress goes to the journal: `journalctl -b -u cec.service`.
+until the address is valid, then sends full wake sequences.
+
+Each sequence is Image View On, an Active Source broadcast, and the remote's
+power-on key. Image View On alone is not enough on many sets — Samsung wants
+the source to claim the path as well as ask for power, and some models only
+act on the remote key.
+
+The reported power state is not trusted as proof: a Samsung in standby
+answers `GIVE_DEVICE_POWER_STATUS` with `on`, which is how an earlier version
+came to send one Image View On, believe it had worked, and leave the TV dark.
+Two full sequences always go out; only from the third does a reported `on`
+end it early, for the case where the set really is already awake. It
+re-registers between rounds because the link drops and returns as a set
+wakes, which clears the logical address. Progress goes to the journal:
+`journalctl -b -u cec.service`.
 
 Standby at poweroff is a separate unit (`cec-standby.service`) started as
 `poweroff.target` is reached, not an `ExecStop` on the boot unit. By that

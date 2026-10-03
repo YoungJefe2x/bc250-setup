@@ -205,26 +205,41 @@ wait_for_bus() {
     return 1
 }
 
+# One full wake attempt. Image View On alone is not enough on a lot of sets:
+# Samsung in particular wants the source to claim the path as well as ask for
+# power, and some models only act on the remote's power key.
+wake_once() {
+    _p=$(get_pa)
+    cec-ctl -d "$DEV" --to 0 --image-view-on >/dev/null 2>&1
+    if [ -n "$_p" ] && [ "$_p" != "f.f.f.f" ]; then
+        cec-ctl -d "$DEV" --active-source phys-addr="$_p" >/dev/null 2>&1
+    fi
+    cec-ctl -d "$DEV" --to 0 --user-control-pressed ui-cmd=power-on-function >/dev/null 2>&1
+    cec-ctl -d "$DEV" --to 0 --user-control-released >/dev/null 2>&1
+}
+
 tv_on() {
     ensure_registered
-    # A TV in standby can ignore the first Image View On while its own HDMI
-    # receiver is still coming up, so send it a few times and check the answer.
+    # Samsung sets report power status 'on' even while they are in standby, so
+    # the reply cannot be trusted as proof of anything. Always send at least
+    # two full wake sequences; only from the third do we let a reported 'on'
+    # end it early, for the case where the set really is awake already.
     _try=1
-    while [ "$_try" -le 4 ]; do
-        cec-ctl -d "$DEV" --to 0 --image-view-on >/dev/null 2>&1
-        sleep 3
+    while [ "$_try" -le 5 ]; do
+        wake_once
+        sleep 4
+        # The link drops and returns as a set wakes, which clears the address.
+        ensure_registered
         _st=$(tv_power_state)
-        case "$_st" in
-            on|to-on)
-                echo "cec-tv: TV reports '$_st' after $_try attempt(s)"
-                break ;;
-        esac
-        echo "cec-tv: attempt $_try — TV reports '${_st:-no answer}', retrying"
+        echo "cec-tv: wake attempt $_try — TV reports '${_st:-no answer}'"
+        if [ "$_try" -ge 2 ]; then
+            case "$_st" in
+                on|to-on) break ;;
+            esac
+        fi
         _try=$((_try + 1))
     done
 
-    # Re-register: the link often drops and returns as the TV wakes, which
-    # clears the logical address we claimed above.
     ensure_registered
     pa=$(get_pa)
     if [ -n "$pa" ] && [ "$pa" != "f.f.f.f" ]; then
