@@ -309,6 +309,12 @@ case "$1" in
         wait_for_bus 60 || exit 0
         tv_on
         ;;
+    boot-watch)
+        # One wake attempt, then settle into watching. Both in one
+        # long-running service so neither can hold up boot.
+        "$0" boot-on || true
+        exec "$0" watch
+        ;;
     watch)
         # For displays that go silent in standby: there is no address to send
         # to at boot, so nothing can wake them. Sit and watch instead. The
@@ -372,42 +378,24 @@ SCRIPT
     # registers the adapter and answers the TV's queries, so running our own
     # cec-follower would be a second claimant on /dev/cec0 — that is what makes
     # the logical address flap. In that case ours only does the boot wake.
+    # When bc250-cec is present it already registers the adapter and answers
+    # the TV, so a second follower of ours would fight it for /dev/cec0 --
+    # that is what made the logical address flap. In that case cec-watch
+    # alone does everything we need and cec.service is not installed at all.
     if systemctl list-unit-files 2>/dev/null | grep -q '^bc250-cec'; then
-        say "bc250-cec detected — boot hook only (no second follower)"
-        cat > /etc/systemd/system/cec.service << 'UNIT'
-[Unit]
-Description=HDMI-CEC TV wake at boot (alongside bc250-cec)
-# multi-user.target, not graphical.target: with the TV off the adapter hands
-# the driver a fallback EDID and the graphical session can fail to come up,
-# which would stop the very service meant to turn the TV on from ever running.
-#
-# Deliberately NOT ordered After=bc250-cec.service. That service is itself
-# After=graphical.target, which closes a loop (us -> bc250-cec -> graphical ->
-# us) and systemd breaks such a cycle by deleting one job -- ours. We do not
-# need it anyway: cec-tv registers the adapter itself when the mask is clear.
-# No After= at all: ordering after a target that wants you is the other way
-# to build a cycle, and cec-tv polls for the device regardless.
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/local/bin/cec-tv boot-on
-TimeoutStartSec=180
-
-[Install]
-WantedBy=multi-user.target
-UNIT
+        say "bc250-cec detected — no follower of our own"
+        rm -f /etc/systemd/system/cec.service
     else
         cat > /etc/systemd/system/cec.service << 'UNIT'
 [Unit]
-Description=HDMI-CEC TV control
+Description=HDMI-CEC follower
 
 [Service]
 Type=simple
 ExecStartPre=/usr/local/bin/cec-tv register
 ExecStart=/usr/bin/cec-follower -d /dev/cec0
-ExecStartPost=/usr/local/bin/cec-tv boot-on
-TimeoutStartSec=180
+# No ExecStartPost=boot-on: that holds the start job for as long as the wake
+# takes, which blocks boot. cec-watch.service does the boot wake instead.
 Restart=on-failure
 RestartSec=5
 
@@ -425,7 +413,7 @@ Description=Claim the TV input when the display reappears
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/cec-tv watch
+ExecStart=/usr/local/bin/cec-tv boot-watch
 Restart=always
 RestartSec=10
 
@@ -469,7 +457,9 @@ UNIT
           /etc/systemd/system/*.target.wants/cec-standby.service \
           /etc/systemd/system/*.target.wants/cec-watch.service
     systemctl daemon-reload
-    systemctl enable --now cec.service || warn "service failed to start; check: systemctl status cec.service"
+    if [ -e /etc/systemd/system/cec.service ]; then
+        systemctl enable --now cec.service || warn "check: systemctl status cec.service"
+    fi
     systemctl enable --now cec-watch.service || warn "could not start cec-watch.service"
     systemctl enable cec-standby.service || warn "could not enable cec-standby.service"
 
@@ -517,7 +507,11 @@ cec_test() {
     fi
 
     if is_done cec; then
-        say "cec.service (boot wake): $(systemctl is-enabled cec.service 2>/dev/null || echo unknown)"
+        if [ -e /etc/systemd/system/cec.service ]; then
+            say "cec.service (follower): $(systemctl is-enabled cec.service 2>/dev/null || echo unknown)"
+        else
+            say "cec.service: not needed (bc250-cec is the follower)"
+        fi
         _sb=$(systemctl is-enabled cec-standby.service 2>/dev/null || echo missing)
         say "cec-standby.service (poweroff): $_sb"
         _w=$(systemctl is-active cec-watch.service 2>/dev/null || echo inactive)
@@ -688,55 +682,100 @@ import time
 import evdev
 
 DEBOUNCE = 3.0          # guide is also Steam's menu button; don't spam CEC
+RESCAN = 30.0           # seconds between looking for new controllers
 CEC_TV = "/usr/local/bin/cec-tv"
 
 
-def guide_devices():
-    devs = []
-    for path in evdev.list_devices():
-        try:
-            dev = evdev.InputDevice(path)
-            keys = dev.capabilities().get(evdev.ecodes.EV_KEY, [])
-            if evdev.ecodes.BTN_MODE in keys:
-                devs.append(dev)
-            else:
-                dev.close()
-        except OSError:
-            pass
-    return devs
-
-
-def main():
-    last = 0.0
-    while True:
-        devs = {d.fd: d for d in guide_devices()}
-        if not devs:
-            time.sleep(5)
-            continue
-        while devs:
-            ready, _, _ = select.select(list(devs), [], [], 5)
-            if not ready:
-                break           # periodic rescan picks up new controllers
-            for fd in ready:
-                dev = devs.get(fd)
-                if dev is None:
-                    continue
-                try:
-                    for ev in dev.read():
-                        if (ev.type == evdev.ecodes.EV_KEY
-                                and ev.code == evdev.ecodes.BTN_MODE
-                                and ev.value == 1):
-                            now = time.time()
-                            if now - last > DEBOUNCE:
-                                last = now
-                                subprocess.run([CEC_TV, "on"], check=False)
-                except OSError:
-                    devs.pop(fd, None)
-        for dev in devs.values():
+def probe(path):
+    """True if this device reports a guide button. Opens it briefly."""
+    dev = None
+    try:
+        dev = evdev.InputDevice(path)
+        return evdev.ecodes.BTN_MODE in dev.capabilities().get(evdev.ecodes.EV_KEY, [])
+    except OSError:
+        return False
+    finally:
+        if dev is not None:
             try:
                 dev.close()
             except OSError:
                 pass
+
+
+def main():
+    last = 0.0
+    open_devs = {}          # path -> InputDevice, held open, not churned
+    not_gamepads = set()    # paths already checked and rejected
+    next_scan = 0.0
+
+    while True:
+        now = time.time()
+
+        # Rescan occasionally for controllers that connected or went away.
+        # Devices already open are left strictly alone: closing and reopening
+        # them repeatedly disturbs whatever else is reading the controller,
+        # which is how an earlier version left the pad dead in game mode.
+        if now >= next_scan:
+            next_scan = now + RESCAN
+            present = set(evdev.list_devices())
+
+            # Forget paths that have gone away, so a reused path is probed
+            # again rather than trusted from a previous device.
+            not_gamepads.intersection_update(present)
+            for path in list(open_devs):
+                if path not in present:
+                    try:
+                        open_devs.pop(path).close()
+                    except OSError:
+                        open_devs.pop(path, None)
+
+            # Only ever open a path we have not already classified. At steady
+            # state this opens nothing at all: repeatedly opening the
+            # keyboard and the pad just to re-read their capabilities is what
+            # disturbed input in game mode before.
+            for path in present - set(open_devs) - not_gamepads:
+                if probe(path):
+                    try:
+                        open_devs[path] = evdev.InputDevice(path)
+                    except OSError:
+                        pass
+                else:
+                    not_gamepads.add(path)
+
+        if not open_devs:
+            time.sleep(2)
+            continue
+
+        try:
+            ready, _, _ = select.select(list(open_devs.values()), [], [], 2)
+        except (OSError, ValueError):
+            # A device vanished mid-select; drop everything and rescan.
+            for dev in open_devs.values():
+                try:
+                    dev.close()
+                except OSError:
+                    pass
+            open_devs.clear()
+            next_scan = 0
+            continue
+
+        for dev in ready:
+            try:
+                for ev in dev.read():
+                    if (ev.type == evdev.ecodes.EV_KEY
+                            and ev.code == evdev.ecodes.BTN_MODE
+                            and ev.value == 1):
+                        now = time.time()
+                        if now - last > DEBOUNCE:
+                            last = now
+                            subprocess.run([CEC_TV, "on"], check=False)
+            except OSError:
+                try:
+                    dev.close()
+                except OSError:
+                    pass
+                open_devs.pop(dev.path, None)
+                next_scan = 0
 
 
 if __name__ == "__main__":
@@ -1270,7 +1309,10 @@ show_status() {
         else _none "/dev/cec0" "absent"; fi
     fi
     _file_line "cec-tv" /usr/local/bin/cec-tv "$_w"
-    _unit_line "cec.service" cec.service "$_w"
+    if [ -e /etc/systemd/system/cec.service ]; then
+        _unit_line "cec.service" cec.service "$_w"
+    fi
+    _unit_line "cec-watch" cec-watch.service "$_w"
     _unit_line "cec-standby" cec-standby.service "$_w"
     if [ -n "$(systemctl list-unit-files bc250-cec.service --no-legend 2>/dev/null)" ]; then
         if systemctl is-active --quiet bc250-cec >/dev/null 2>&1; then
