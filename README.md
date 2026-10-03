@@ -20,6 +20,7 @@ sudo sh bc250-setup.sh
   8) BC-250 Control Center  [not installed]
 
   a) Install all
+  s) Status — what is actually installed
   t) Test HDMI-CEC
   u) Update this script
   r) Revert / remove
@@ -177,6 +178,27 @@ asks for a password partway through.
 After installing, launch it and choose **Prepare dependencies** on its
 dashboard — it detects the distro and pulls the governor, fan and CU tools
 itself. Revert removes the package but leaves those dependencies alone.
+
+## Status
+
+The `[installed]` tags in the menu only read the marker files under
+`/var/lib/bc250-setup`. `s` checks the system itself — binaries, unit states,
+masked targets, config values, installed packages — and marks each line:
+
+```
+  1. HDMI-CEC TV control            [installed]
+     [+] /dev/cec0            addr 2.0.0.0, mask 0x0010
+     [+] TV                   reports on
+     [!] cec-tv               missing: /usr/local/bin/cec-tv
+     [+] cec.service          enabled, active
+     [!] cec-standby          unit missing
+     [+] bc250-cec            running (owns registration)
+```
+
+`[+]` fine, `[-]` not installed, `[!]` marked installed but broken. The count
+of `[!]` lines is summarised at the end. This is what catches a component
+that was installed once and has since lost a file or a unit — a system
+update, a half-finished revert, a manual edit.
 
 ## Updating
 

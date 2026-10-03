@@ -16,6 +16,7 @@
 # Every component can be installed and reverted independently. What has been
 # installed is recorded under /var/lib/bc250-setup so revert knows what to undo.
 #
+# `s` checks the system itself and reports what is really installed.
 # `u` pulls a newer copy of this script from GitHub and replaces itself.
 
 set -e
@@ -160,7 +161,7 @@ ensure_registered() {
 PAUSE_FLAG=/run/cec-tv.bc250-cec-paused
 
 pause_bc250_cec() {
-    if systemctl is-active --quiet bc250-cec 2>/dev/null; then
+    if systemctl is-active --quiet bc250-cec >/dev/null 2>&1; then
         systemctl stop bc250-cec 2>/dev/null && : > "$PAUSE_FLAG"
         sleep 1
     fi
@@ -378,7 +379,7 @@ cec_test() {
     esac
 
     if systemctl list-unit-files 2>/dev/null | grep -q '^bc250-cec'; then
-        if systemctl is-active --quiet bc250-cec 2>/dev/null; then
+        if systemctl is-active --quiet bc250-cec >/dev/null 2>&1; then
             say "bc250-cec: running (it owns registration; ours is hooks only)"
         else
             warn "bc250-cec is installed but NOT running."
@@ -1062,6 +1063,192 @@ decky_revert() {
     decky_loader_revert
 }
 
+# ================================================================= STATUS ===
+
+# The [installed] tags in the menu only read the marker files. This checks the
+# system itself, so a component that was marked installed but has since lost a
+# service or a file shows up as broken rather than fine.
+_PROBLEMS=0
+
+_ok()   { printf '     [+] %-20s %s\n' "$1" "$2"; }
+_bad()  { printf '     [!] %-20s %s\n' "$1" "$2"; _PROBLEMS=$((_PROBLEMS + 1)); }
+_none() { printf '     [-] %-20s %s\n' "$1" "$2"; }
+
+# "enabled, active" / "disabled, inactive" / "missing"
+_unit() {
+    if [ -z "$(systemctl list-unit-files "$1" --no-legend 2>/dev/null)" ]; then
+        echo missing
+        return 1
+    fi
+    _en=$(systemctl is-enabled "$1" 2>/dev/null) || true
+    _ac=$(systemctl is-active  "$1" 2>/dev/null) || true
+    printf '%s, %s\n' "${_en:-not-enabled}" "${_ac:-inactive}"
+}
+
+# Report a unit, counting a missing/failed one as a problem only when the
+# component is supposed to be installed.
+_unit_line() {
+    _label="$1"; _u="$2"; _want="$3"
+    _s=$(_unit "$_u") || true
+    case "$_s" in
+        missing)      if [ "$_want" = yes ]; then _bad "$_label" "unit missing"
+                      else _none "$_label" "not installed"; fi ;;
+        enabled*)     _ok  "$_label" "$_s" ;;
+        *)            if [ "$_want" = yes ]; then _bad "$_label" "$_s"
+                      else _none "$_label" "$_s"; fi ;;
+    esac
+}
+
+_file_line() {
+    if [ -e "$2" ]; then _ok "$1" "$2"
+    elif [ "$3" = yes ]; then _bad "$1" "missing: $2"
+    else _none "$1" "not installed"; fi
+}
+
+show_status() {
+    _PROBLEMS=0
+    echo
+    echo "  ======== Status ========"
+    printf '  %s  ·  kernel %s\n' "$(uname -n)" "$(uname -r)"
+    printf '  user %s  ·  home %s\n' "$REAL_USER" "$REAL_HOME"
+
+    # ---- 1. CEC
+    echo
+    printf '  1. HDMI-CEC TV control            [%s]\n' "$(status cec)"
+    _w=no; is_done cec && _w=yes
+    if [ -e /dev/cec0 ]; then
+        _pa=$(cec-ctl -d /dev/cec0 2>/dev/null | awk '/Physical Address/ {print $4; exit}')
+        _mk=$(cec-ctl -d /dev/cec0 2>/dev/null | awk '/Logical Address Mask/ {print $5; exit}')
+        case "$_pa" in
+            ""|f.f.f.f) _bad "/dev/cec0" "present but no address (link down?)" ;;
+            *)          _ok  "/dev/cec0" "addr $_pa, mask ${_mk:-?}" ;;
+        esac
+        _tv=$(cec-ctl -d /dev/cec0 --to 0 --give-device-power-status 2>/dev/null |
+                  awk '/pwr-state/ {print $2; exit}')
+        [ -n "$_tv" ] && _ok "TV" "reports $_tv" || _none "TV" "no answer"
+    else
+        if [ "$_w" = yes ]; then _bad "/dev/cec0" "absent — no CEC adapter"
+        else _none "/dev/cec0" "absent"; fi
+    fi
+    _file_line "cec-tv" /usr/local/bin/cec-tv "$_w"
+    _unit_line "cec.service" cec.service "$_w"
+    _unit_line "cec-standby" cec-standby.service "$_w"
+    if [ -n "$(systemctl list-unit-files bc250-cec.service --no-legend 2>/dev/null)" ]; then
+        if systemctl is-active --quiet bc250-cec >/dev/null 2>&1; then
+            _ok "bc250-cec" "running (owns registration)"
+        else
+            _bad "bc250-cec" "installed but stopped — sudo systemctl start bc250-cec"
+        fi
+    else
+        _none "bc250-cec" "not installed"
+    fi
+
+    # ---- 2. LED
+    echo
+    printf '  2. LED strip daemon               [%s]\n' "$(status led)"
+    _w=no; is_done led && _w=yes
+    _file_line "led binary" /usr/local/bin/led "$_w"
+    if [ -f /etc/led-controller/config.json ]; then
+        # Match on the key itself rather than a field number: the JSON is not
+        # guaranteed to put one key per line.
+        _leds=$(grep -o '"leds"[[:space:]]*:[[:space:]]*[0-9][0-9]*' \
+                /etc/led-controller/config.json 2>/dev/null |
+                grep -o '[0-9][0-9]*$' | head -1)
+        _port=$(grep -o '"port"[[:space:]]*:[[:space:]]*"[^"]*"' \
+                /etc/led-controller/config.json 2>/dev/null | head -1 |
+                sed 's/.*:[[:space:]]*"//; s/"$//')
+        _ok "config" "${_leds:-?} LEDs, port ${_port:-?}"
+    else
+        _file_line "config" /etc/led-controller/config.json "$_w"
+    fi
+    _unit_line "led-controller" led-controller.service "$_w"
+    _file_line "source checkout" "$LED_SRC" no
+
+    # ---- 3. Power
+    echo
+    printf '  3. Power button / suspend         [%s]\n' "$(status power)"
+    _masked=0
+    for _t in sleep.target suspend.target hibernate.target hybrid-sleep.target; do
+        [ "$(systemctl is-enabled "$_t" 2>/dev/null)" = masked ] && _masked=$((_masked + 1))
+    done
+    if [ "$_masked" -eq 4 ]; then
+        _ok "suspend" "all 4 targets masked"
+    elif is_done power; then
+        _bad "suspend" "only $_masked/4 targets masked"
+    else
+        _none "suspend" "$_masked/4 targets masked"
+    fi
+    _w=no; is_done power && _w=yes
+    _file_line "logind drop-in" /etc/systemd/logind.conf.d/99-bc250.conf "$_w"
+
+    # ---- 4. Guide button
+    echo
+    printf '  4. Guide button -> input          [%s]\n' "$(status guide)"
+    _w=no; is_done guide && _w=yes
+    _file_line "cec-guide-watch" /usr/local/bin/cec-guide-watch "$_w"
+    _unit_line "cec-guide" cec-guide.service "$_w"
+    _file_line "udev fallback" /etc/udev/rules.d/99-cec-controller.rules no
+
+    # ---- 5. Controllers off
+    echo
+    printf '  5. Controllers off                [%s]\n' "$(status ctrl)"
+    _w=no; is_done ctrl && _w=yes
+    _file_line "controllers-off.sh" /usr/local/bin/controllers-off.sh "$_w"
+    _unit_line "controllers-off" controllers-off.service "$_w"
+
+    # ---- 6. Decky
+    echo
+    printf '  6. Decky plugins                  [%s]\n' "$(status decky)"
+    if decky_present; then
+        _ok "Decky Loader" "$REAL_HOME/homebrew"
+    else
+        _none "Decky Loader" "not installed"
+    fi
+    if [ -d "$DECKY_DIR" ]; then
+        for _p in "$DECKY_DIR"/*; do
+            [ -d "$_p" ] || continue
+            _ok "plugin" "$(basename "$_p")"
+        done
+    fi
+    if [ -f "$DISCORD_SETTINGS_DIR/config.json" ] &&
+       grep -q '"client_secret"[[:space:]]*:[[:space:]]*"[^"]' \
+            "$DISCORD_SETTINGS_DIR/config.json" 2>/dev/null; then
+        _ok "Discord creds" "set"
+    elif [ -d "$DECKY_DIR/discord-deck" ]; then
+        _bad "Discord creds" "not set — reinstall option 6 to enter them"
+    fi
+
+    # ---- 7. Android TV
+    echo
+    printf '  7. Android TV (Waydroid)          [%s]\n' "$(status atv)"
+    _w=no; is_done atv && _w=yes
+    if command -v waydroid >/dev/null 2>&1; then _ok "waydroid" "installed"
+    elif [ "$_w" = yes ]; then _bad "waydroid" "not installed"
+    else _none "waydroid" "not installed"; fi
+    _unit_line "waydroid-container" waydroid-container.service "$_w"
+    _file_line "launcher" "$REAL_HOME/waydroid-tv.sh" "$_w"
+    _file_line "sudoers rule" /etc/sudoers.d/waydroid-udev "$_w"
+
+    # ---- 8. Control Center
+    echo
+    printf '  8. BC-250 Control Center          [%s]\n' "$(status ctlcenter)"
+    if pacman -Qq bc250-control-center-git >/dev/null 2>&1; then
+        _ok "package" "$(pacman -Q bc250-control-center-git 2>/dev/null)"
+    elif is_done ctlcenter; then
+        _bad "package" "marked installed but not present"
+    else
+        _none "package" "not installed"
+    fi
+
+    echo
+    if [ "$_PROBLEMS" -eq 0 ]; then
+        say "Nothing looks broken."
+    else
+        warn "$_PROBLEMS item(s) marked [!] above need attention."
+        warn "Re-running that component's install option usually fixes it."
+    fi
+}
+
 # ================================================================= UPDATE ===
 
 # Fetch the newest copy of this script and replace the running one. Works from
@@ -1240,6 +1427,7 @@ main_menu() {
   8) BC-250 Control Center  [$(status ctlcenter)]
 
   a) Install all
+  s) Status — what is actually installed
   t) Test HDMI-CEC
   u) Update this script
   r) Revert / remove
@@ -1257,6 +1445,7 @@ MENU
             7) atv_install   || true; pause ;;
             8) ctlcenter_install || true; pause ;;
             a|A) install_all; pause ;;
+            s|S) show_status || true; pause ;;
             t|T) cec_test || true; pause ;;
             u|U) self_update || true; pause ;;
             r|R) revert_menu ;;
