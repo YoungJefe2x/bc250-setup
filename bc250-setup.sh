@@ -186,22 +186,55 @@ tv_power_state() {
 # address reads back as f.f.f.f; an adapter in that state cannot claim a
 # logical address, so anything sent at that point goes nowhere. This is what
 # a fixed `sleep 3` got wrong.
+# Force the DP link to re-detect, the same debugfs poke bc250-cec uses to
+# recover a dropped link. After a cold boot the adapter has only just been
+# powered up and a display in standby may not have answered its EDID read,
+# which leaves the CEC physical address invalid and nothing able to transmit.
+force_hotplug() {
+    for _f in /sys/kernel/debug/dri/*/DP-1/trigger_hotplug \
+              /sys/kernel/debug/dri/*/DP-*/trigger_hotplug; do
+        [ -e "$_f" ] || continue
+        if echo 1 > "$_f" 2>/dev/null; then
+            echo "cec-tv: forced a DP re-detect via $_f"
+            return 0
+        fi
+    done
+    return 1
+}
+
 wait_for_bus() {
     _limit=${1:-60}
     _n=0
+    _last=""
     while [ "$_n" -lt "$_limit" ]; do
         if [ -e "$DEV" ]; then
             _pa=$(get_pa)
             case "$_pa" in
-                ""|f.f.f.f) : ;;
+                ""|f.f.f.f) _seen="address ${_pa:-unreadable}" ;;
                 *) echo "cec-tv: bus ready after ${_n}s, physical address $_pa"
                    return 0 ;;
             esac
+        else
+            _seen="no $DEV yet"
+        fi
+        # Say what is actually being seen, but only when it changes.
+        if [ "$_seen" != "$_last" ]; then
+            echo "cec-tv: waiting — $_seen"
+            _last="$_seen"
+        fi
+        # Nudge the link every 10s. A display in standby often ignores the
+        # first EDID read after the adapter powers up; re-detecting gives it
+        # another chance without waiting for the whole timeout.
+        if [ $((_n % 10)) -eq 9 ]; then
+            force_hotplug || true
+            sleep 2
         fi
         _n=$((_n + 1))
         sleep 1
     done
     echo "cec-tv: no usable CEC address after ${_limit}s — giving up" >&2
+    echo "cec-tv: the display is not answering while in standby, so CEC cannot" >&2
+    echo "cec-tv: reach it from a cold boot. Wake it with its remote." >&2
     return 1
 }
 
@@ -1292,6 +1325,7 @@ self_update() {
         if runuser -u "$_owner" -- git -C "$_dir" pull --ff-only; then
             say "Checkout updated."
             rm -f "$_new"
+            : > "$REFRESH_FLAG" 2>/dev/null || true
             _offer_restart "$_self"
             return 0
         fi
@@ -1358,8 +1392,31 @@ self_update() {
         return 1
     fi
     chmod +x "$_self" 2>/dev/null || true
+    : > "$REFRESH_FLAG" 2>/dev/null || true
     say "Updated. Previous version saved as $(basename "$_self").bak"
     _offer_restart "$_self"
+}
+
+# Updating the script does not touch the helper scripts and units already
+# written to disk by an install, so a newer version can sit there doing
+# nothing while the old files keep running. Flag it and re-apply on next start.
+REFRESH_FLAG="$STATE_DIR/.refresh-needed"
+
+refresh_installed() {
+    say "Re-applying installed components so their files match this version"
+    _did=0
+    if is_done cec;   then cec_install   || warn "cec refresh failed";   _did=1; fi
+    if is_done power; then power_install || warn "power refresh failed"; _did=1; fi
+    if is_done guide; then guide_install || warn "guide refresh failed"; _did=1; fi
+    if is_done ctrl;  then ctrl_install  || warn "controllers refresh failed"; _did=1; fi
+    if [ "$_did" -eq 0 ]; then
+        say "Nothing installed that this script writes directly."
+    fi
+    # The others (LED, Decky, Android TV, Control Center) install external
+    # software rather than files this script owns, so an update never stales
+    # them; re-run those options by hand if you want them rebuilt.
+    rm -f "$REFRESH_FLAG"
+    return 0
 }
 
 # The shell is still running the old copy, so offer to hand over to the new one.
@@ -1428,6 +1485,18 @@ MENU
 }
 
 main_menu() {
+    if [ -e "$REFRESH_FLAG" ]; then
+        echo
+        say "This script was updated after these components were installed, so"
+        say "the helper scripts and units on disk are still the older ones."
+        if confirm "Re-apply them now?"; then
+            refresh_installed || true
+        else
+            rm -f "$REFRESH_FLAG"
+            warn "Skipped — run each installed option again to pick up changes."
+        fi
+        pause
+    fi
     while :; do
         cat << MENU
 

@@ -50,7 +50,20 @@ Waking at boot waits for the bus rather than firing on a timer. Straight
 after a cold boot the DP link is still settling and the physical address
 reads back as `f.f.f.f`; an adapter in that state cannot claim a logical
 address, so anything sent then goes nowhere. `boot-on` polls for up to 60s
-until the address is valid, then sends full wake sequences.
+until the address is valid, then sends full wake sequences. Every 10s of that
+wait it forces a DP re-detect through `trigger_hotplug` — the same debugfs
+poke bc250-cec uses — because a display in standby often ignores the first
+EDID read after the adapter powers up.
+
+Whether this can work at all depends on the display. The adapter is powered
+from the DisplayPort connector, so a full poweroff kills it; on the next boot
+it has to read EDID afresh from a display that is in standby. A set that does
+not answer leaves the physical address at `f.f.f.f`, no logical address can be
+claimed, and nothing can be transmitted — the journal says so plainly. Waking
+such a set over CEC from a cold boot is not possible; its own remote is the
+only way in. A set that stays reachable in standby works fine, which is why
+`cec-tv off` then `cec-tv on` with the board still running is a different
+case entirely.
 
 Each sequence is Image View On, an Active Source broadcast, and the remote's
 power-on key. Image View On alone is not enough on many sets — Samsung wants
@@ -230,6 +243,13 @@ reported as already current and nothing is written. Otherwise the old
 version is kept as `bc250-setup.sh.bak` and the new one moved into place with
 `mv`, which is a rename — the copy the running shell is still reading stays
 intact. It then offers to re-exec on the new version.
+
+Updating the script does not touch the helper scripts and units an install
+already wrote to disk, so a newer version can sit there while the old files
+keep running. After an update the next start offers to re-apply the
+components that are marked installed. The LED daemon, Decky, Android TV and
+Control Center install external software rather than files this script owns,
+so an update never stales those.
 
 ## Notes
 
