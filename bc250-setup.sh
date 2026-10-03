@@ -178,10 +178,8 @@ SCRIPT
         say "Wake-on-LAN is set for $_mac"
         confirm "Change it?" && _mac=""
     fi
-    if [ -z "$_mac" ]; then
-        echo "  Some TVs drop HDMI completely in standby, which makes a CEC wake"
-        echo "  impossible from a cold boot — there is no address to send to."
-        echo "  Wake-on-LAN goes over the network instead and sidesteps that."
+    if [ -z "$_mac" ] &&
+       confirm "Set up Wake-on-LAN as a fallback? (only if CEC can't wake your TV)"; then
         echo
         echo "  On the TV, turn on network standby first:"
         echo "    Samsung: Settings - General - Network - Expert Settings -"
@@ -189,9 +187,8 @@ SCRIPT
         echo "    LG:      Settings - General - Mobile TV On / Turn on via Wi-Fi"
         echo
         echo "  Find its MAC with the TV ON:   ip neigh | grep 192.168"
-        echo "  Leave blank to skip Wake-on-LAN."
         echo
-        printf '  TV MAC address: '
+        printf '  TV MAC address (blank to skip): '
         read -r _mac
     fi
     if [ -n "$_mac" ]; then
@@ -199,7 +196,6 @@ SCRIPT
         say "Saved. Test it any time with: tv-wol $_mac"
     else
         rm -f /etc/cec-tv.conf
-        say "No Wake-on-LAN configured."
     fi
 
     cat > /usr/local/bin/cec-tv << 'SCRIPT'

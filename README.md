@@ -67,8 +67,9 @@ journal and a service that silently never ran.
 
 ### Wake-on-LAN
 
-Installing the CEC component asks for the TV's MAC address, optionally. If
-given, the boot path sends a magic packet before touching CEC at all.
+Optional, and off unless you ask for it: the CEC install offers it as a
+fallback and a single `n` skips it. If a MAC is given, the boot path sends a
+magic packet before touching CEC at all.
 
 This exists because the CEC physical address is derived from the display's
 EDID. A TV that stops answering while in standby leaves it at `f.f.f.f`, so
