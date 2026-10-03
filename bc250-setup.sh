@@ -427,7 +427,8 @@ Description=HDMI-CEC TV wake at boot (alongside bc250-cec)
 # After=graphical.target, which closes a loop (us -> bc250-cec -> graphical ->
 # us) and systemd breaks such a cycle by deleting one job -- ours. We do not
 # need it anyway: cec-tv registers the adapter itself when the mask is clear.
-After=multi-user.target
+# No After= at all: ordering after a target that wants you is the other way
+# to build a cycle, and cec-tv polls for the device regardless.
 
 [Service]
 Type=oneshot
@@ -442,7 +443,6 @@ UNIT
         cat > /etc/systemd/system/cec.service << 'UNIT'
 [Unit]
 Description=HDMI-CEC TV control
-After=multi-user.target
 
 [Service]
 Type=simple
@@ -484,9 +484,22 @@ TimeoutStartSec=20
 WantedBy=poweroff.target halt.target
 UNIT
 
+    # `systemctl enable` adds symlinks but never removes stale ones. An
+    # earlier version of this unit was WantedBy=graphical.target, and a
+    # leftover graphical.target.wants link rebuilds the ordering cycle that
+    # makes systemd delete our start job -- the service then silently never
+    # runs and the journal is empty. Clear every wants link first.
+    systemctl disable cec.service cec-standby.service >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/*.target.wants/cec.service \
+          /etc/systemd/system/*.target.wants/cec-standby.service
     systemctl daemon-reload
     systemctl enable --now cec.service || warn "service failed to start; check: systemctl status cec.service"
     systemctl enable cec-standby.service || warn "could not enable cec-standby.service"
+
+    if journalctl -b -q --no-pager 2>/dev/null | grep -q "ordering cycle.*cec.service"; then
+        warn "This boot already hit an ordering cycle involving cec.service."
+        warn "The links are fixed now, but reboot before judging the result."
+    fi
     mark cec
     say "Done. Manual control: cec-tv on | cec-tv off | cec-tv cycle"
 }
@@ -535,6 +548,13 @@ cec_test() {
             *) warn "The standby unit is not enabled — the TV will not sleep on"
                warn "poweroff. Re-run option 1 to install the current version." ;;
         esac
+        _stale=$(ls /etc/systemd/system/graphical.target.wants/cec.service 2>/dev/null || true)
+        if [ -n "$_stale" ]; then
+            _bad "stale symlink" "graphical.target.wants/cec.service — causes a cycle"
+        fi
+        if journalctl -b -q --no-pager 2>/dev/null | grep -q "ordering cycle.*cec.service"; then
+            _bad "ordering cycle" "systemd deleted the boot job this boot"
+        fi
         say "This boot's wake attempt:"
         journalctl -b -u cec.service --no-pager -q 2>/dev/null | tail -8 | sed 's/^/    /'
         say "Last poweroff standby attempt:"

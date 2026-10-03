@@ -60,10 +60,17 @@ the TV off the adapter hands the driver a fallback EDID, and the graphical
 session can fail to come up on that — which would stop the very service meant
 to turn the TV on from ever running.
 
-It is deliberately not ordered `After=bc250-cec.service`: that service is
-itself `After=graphical.target`, which closes a loop, and systemd breaks an
-ordering cycle by deleting one of the jobs — ours. The symptom is an empty
-journal and a service that silently never ran.
+It carries no `After=` at all. Ordering after `bc250-cec.service` closes a
+loop, since that service is itself `After=graphical.target`; ordering after
+the target that wants you is the other way to build one. systemd breaks an
+ordering cycle by deleting one of the jobs — ours — and the symptom is an
+empty journal and a service that silently never ran.
+
+The install also clears every `*.target.wants` symlink for the unit before
+enabling. `systemctl enable` adds links but never removes stale ones, so a
+`graphical.target.wants/cec.service` left over from an older version keeps
+rebuilding that cycle no matter what the unit file says. The `t` check
+reports both the stale link and a cycle recorded this boot.
 
 ### Wake-on-LAN
 
