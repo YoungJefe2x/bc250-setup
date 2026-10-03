@@ -72,7 +72,16 @@ enabling. `systemctl enable` adds links but never removes stale ones, so a
 rebuilding that cycle no matter what the unit file says. The `t` check
 reports both the stale link and a cycle recorded this boot.
 
-Whether the CEC route alone can work depends on the display. The adapter is powered
+### When the display cannot be woken
+
+A display that stops answering DDC in standby cannot be woken over CEC at
+all: the physical address never becomes valid, so there is no logical address
+and nothing to transmit. `cec-watch.service` covers that case from the other
+side — it polls for the address and, the moment the display comes back on its
+own remote, claims the input. The box still lands on screen without anyone
+reaching for the TV's source button.
+
+Whether the CEC wake itself can work depends on the display. The adapter is powered
 from the DisplayPort connector, so a full poweroff kills it; on the next boot
 it has to read EDID afresh from a display that is in standby. A set that does
 not answer leaves the physical address at `f.f.f.f`, no logical address can be

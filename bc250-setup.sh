@@ -133,7 +133,7 @@ cec_install() {
 #!/bin/sh
 # cec-tv — control the TV over HDMI-CEC
 # usage: cec-tv {register|on|off|cycle [secs]|status|monitor}
-#   (boot-on and poweroff-standby are for the systemd units, not for typing)
+#   (boot-on, watch and poweroff-standby are for the systemd units)
 DEV=/dev/cec0
 OSD="CachyOS"
 
@@ -301,6 +301,29 @@ case "$1" in
         wait_for_bus 60 || exit 0
         tv_on
         ;;
+    watch)
+        # For displays that go silent in standby: there is no address to send
+        # to at boot, so nothing can wake them. Sit and watch instead. The
+        # moment the display comes back — its own remote, usually — the
+        # address appears and we claim the input, so the box still lands on
+        # screen by itself without anyone touching the TV's source button.
+        _was=0
+        while :; do
+            _pa=$(get_pa 2>/dev/null)
+            case "$_pa" in
+                ""|f.f.f.f) _now=0 ;;
+                *)          _now=1 ;;
+            esac
+            if [ "$_now" = 1 ] && [ "$_was" = 0 ]; then
+                echo "cec-tv: display came back at $_pa — claiming input"
+                sleep 3
+                ensure_registered
+                cec-ctl -d "$DEV" --active-source phys-addr="$_pa" >/dev/null 2>&1
+            fi
+            _was=$_now
+            sleep 5
+        done
+        ;;
     poweroff-standby)
         # Run by cec-standby.service as poweroff.target is reached — i.e. after
         # every normal service has already been stopped, bc250-cec included.
@@ -377,6 +400,23 @@ WantedBy=multi-user.target
 UNIT
     fi
 
+    # A display that goes silent in standby cannot be woken over CEC at all,
+    # so the next best thing is to notice the moment it comes back and claim
+    # the input then. Long-running, hence its own unit.
+    cat > /etc/systemd/system/cec-watch.service << 'UNIT'
+[Unit]
+Description=Claim the TV input when the display reappears
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cec-tv watch
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
     # Standby is its own unit, started as poweroff.target is reached rather
     # than hung off the boot unit's ExecStop. Three reasons that matters:
     #   - ExecStop runs while the rest of the system is still being torn down,
@@ -408,11 +448,13 @@ UNIT
     # leftover graphical.target.wants link rebuilds the ordering cycle that
     # makes systemd delete our start job -- the service then silently never
     # runs and the journal is empty. Clear every wants link first.
-    systemctl disable cec.service cec-standby.service >/dev/null 2>&1 || true
+    systemctl disable cec.service cec-standby.service cec-watch.service >/dev/null 2>&1 || true
     rm -f /etc/systemd/system/*.target.wants/cec.service \
-          /etc/systemd/system/*.target.wants/cec-standby.service
+          /etc/systemd/system/*.target.wants/cec-standby.service \
+          /etc/systemd/system/*.target.wants/cec-watch.service
     systemctl daemon-reload
     systemctl enable --now cec.service || warn "service failed to start; check: systemctl status cec.service"
+    systemctl enable --now cec-watch.service || warn "could not start cec-watch.service"
     systemctl enable cec-standby.service || warn "could not enable cec-standby.service"
 
     if journalctl -b -q --no-pager 2>/dev/null | grep -q "ordering cycle.*cec.service"; then
@@ -462,6 +504,8 @@ cec_test() {
         say "cec.service (boot wake): $(systemctl is-enabled cec.service 2>/dev/null || echo unknown)"
         _sb=$(systemctl is-enabled cec-standby.service 2>/dev/null || echo missing)
         say "cec-standby.service (poweroff): $_sb"
+        _w=$(systemctl is-active cec-watch.service 2>/dev/null || echo inactive)
+        say "cec-watch.service (input claim): $_w"
         case "$_sb" in
             enabled) : ;;
             *) warn "The standby unit is not enabled — the TV will not sleep on"
@@ -500,12 +544,14 @@ cec_test() {
 
 cec_revert() {
     say "Removing HDMI-CEC TV control"
-    systemctl disable --now cec.service 2>/dev/null || true
+    systemctl disable --now cec.service cec-watch.service 2>/dev/null || true
     systemctl disable cec-standby.service 2>/dev/null || true
     rm -f /etc/systemd/system/cec.service \
           /etc/systemd/system/cec-standby.service \
+          /etc/systemd/system/cec-watch.service \
           /etc/systemd/system/*.target.wants/cec.service \
           /etc/systemd/system/*.target.wants/cec-standby.service \
+          /etc/systemd/system/*.target.wants/cec-watch.service \
           /usr/local/bin/cec-tv
     systemctl daemon-reload
     unmark cec
