@@ -50,10 +50,13 @@ Waking at boot waits for the bus rather than firing on a timer. Straight
 after a cold boot the DP link is still settling and the physical address
 reads back as `f.f.f.f`; an adapter in that state cannot claim a logical
 address, so anything sent then goes nowhere. `boot-on` polls for up to 60s
-until the address is valid, then sends full wake sequences. Every 10s of that
-wait it forces a DP re-detect through `trigger_hotplug` — the same debugfs
-poke bc250-cec uses — because a display in standby often ignores the first
-EDID read after the adapter powers up.
+until the address is valid, then sends full wake sequences.
+
+Nothing here writes `trigger_hotplug`. Each re-detect blanks the screen for
+about a second, and on this hardware not one ever produced a valid address —
+the GPU re-reads EDID from the adapter, while it is the adapter holding a
+stale fallback cached at its own power-up. All they did was make a working
+picture flash on and off.
 
 The boot unit is wanted by `multi-user.target`, not `graphical.target`. With
 the TV off the adapter hands the driver a fallback EDID, and the graphical
@@ -78,11 +81,9 @@ A display that stops answering DDC in standby cannot be woken over CEC at
 all: the physical address never becomes valid, so there is no logical address
 and nothing to transmit. `cec-watch.service` covers that case from the other
 side. It polls for the address and claims the
-input the moment one appears, and deliberately does not force a re-detect
-while waiting: each one blanks the screen for about a second, and it cannot
-help anyway. The GPU re-reads EDID from the adapter, but it is the adapter
-holding a stale fallback it cached at its own power-up — only the adapter
-losing power makes it read the display again.
+input the moment one appears. The boot wake runs once per boot, marked in
+`/run`, so a service restart goes straight to watching rather than repeating
+the whole 60s wait.
 
 That is also why the adapter matters more than the TV here. If the board
 powers on while the display is off, the adapter caches a fallback EDID and

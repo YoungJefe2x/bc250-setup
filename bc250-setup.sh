@@ -186,22 +186,6 @@ tv_power_state() {
 # address reads back as f.f.f.f; an adapter in that state cannot claim a
 # logical address, so anything sent at that point goes nowhere. This is what
 # a fixed `sleep 3` got wrong.
-# Force the DP link to re-detect, the same debugfs poke bc250-cec uses to
-# recover a dropped link. After a cold boot the adapter has only just been
-# powered up and a display in standby may not have answered its EDID read,
-# which leaves the CEC physical address invalid and nothing able to transmit.
-force_hotplug() {
-    for _f in /sys/kernel/debug/dri/*/DP-1/trigger_hotplug \
-              /sys/kernel/debug/dri/*/DP-*/trigger_hotplug; do
-        [ -e "$_f" ] || continue
-        if echo 1 > "$_f" 2>/dev/null; then
-            echo "cec-tv: forced a DP re-detect via $_f"
-            return 0
-        fi
-    done
-    return 1
-}
-
 wait_for_bus() {
     _limit=${1:-60}
     _n=0
@@ -222,13 +206,11 @@ wait_for_bus() {
             echo "cec-tv: waiting — $_seen"
             _last="$_seen"
         fi
-        # Nudge the link every 10s. A display in standby often ignores the
-        # first EDID read after the adapter powers up; re-detecting gives it
-        # another chance without waiting for the whole timeout.
-        if [ $((_n % 10)) -eq 9 ]; then
-            force_hotplug || true
-            sleep 2
-        fi
+        # No trigger_hotplug nudges here. Every one blanks the screen for about
+        # a second, and on this hardware not one ever produced a valid address:
+        # the GPU re-reads EDID from the adapter, while it is the adapter that
+        # holds a stale fallback cached at its own power-up. All they did was
+        # make a working picture flash on and off.
         _n=$((_n + 1))
         sleep 1
     done
@@ -311,8 +293,13 @@ case "$1" in
         ;;
     boot-watch)
         # One wake attempt, then settle into watching. Both in one
-        # long-running service so neither can hold up boot.
-        "$0" boot-on || true
+        # long-running service so neither can hold up boot. The attempt is
+        # marked done in /run so a service restart goes straight to watching
+        # instead of running the whole 60s wait again.
+        if [ ! -e /run/cec-tv.boot-done ]; then
+            : > /run/cec-tv.boot-done 2>/dev/null || true
+            "$0" boot-on || true
+        fi
         exec "$0" watch
         ;;
     watch)
