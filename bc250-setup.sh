@@ -8,7 +8,6 @@
 #   led     WS2812B LED strip daemon + ESP32 firmware flash
 #   power   power button = shutdown, suspend disabled
 #   guide   controller guide button switches the TV to this input
-#   ctrl    disconnect BT controllers on poweroff
 #   decky   Decky plugins installed from local zip files
 #   atv     Android TV (Waydroid) launchable from game mode
 #   ctlcenter  BC-250 Control Center (AUR) — GPU/CPU/fan tuning
@@ -736,165 +735,20 @@ guide_revert() {
 
 # =========================================================== CONTROLLERS ====
 
-ctrl_install() {
-    say "Turn off Bluetooth controllers on poweroff"
-    say "Stops the ESP32 seeing a reconnecting pad and powering the board back on."
-
-    cat > /usr/local/bin/controllers-off.sh << 'SCRIPT'
-#!/bin/bash
-# Disconnect BT controllers cleanly just before poweroff. A host-initiated
-# disconnect reads as "turn off" to most pads; losing power instead leaves
-# them advertising, which the ESP32 treats as a wake request.
-
-# Only on poweroff, not reboot.
-systemctl list-jobs | grep -q 'poweroff.target.*start' || exit 0
-
-for mac in $(bluetoothctl devices Connected 2>/dev/null | awk '{print $2}'); do
-    bluetoothctl disconnect "$mac"
-done
-
-# Give the pads a moment to act on it before the adapter goes away.
-sleep 2
-SCRIPT
-    chmod +x /usr/local/bin/controllers-off.sh
-
-    cat > /etc/systemd/system/controllers-off.service << 'UNIT'
-[Unit]
-Description=Turn off BT controllers on poweroff
-After=bluetooth.service
-Requires=bluetooth.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/true
-ExecStop=/usr/local/bin/controllers-off.sh
-TimeoutStopSec=10
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-    systemctl daemon-reload
-    systemctl enable --now controllers-off.service || \
-        warn "check: systemctl status controllers-off.service"
-    mark ctrl
-    say "Done. Runs on poweroff only, not reboot."
-}
-
-ctrl_revert() {
-    say "Removing controller poweroff handling"
+# This used to be a component: disconnect BT controllers at poweroff so the
+# ESP32 switch would not see a reconnecting pad and turn the board straight
+# back on. Powering off turns the pad off by itself, so it earned nothing.
+# Left here only to clear it off boxes that installed it.
+ctrl_cleanup() {
+    [ -e "$STATE_DIR/ctrl" ] || [ -e /etc/systemd/system/controllers-off.service ] || return 0
+    say "Removing the old 'controllers off' component (no longer part of this script)"
     systemctl disable --now controllers-off.service 2>/dev/null || true
-    rm -f /etc/systemd/system/controllers-off.service /usr/local/bin/controllers-off.sh
-    systemctl daemon-reload
+    rm -f /etc/systemd/system/controllers-off.service \
+          /etc/systemd/system/*.target.wants/controllers-off.service \
+          /usr/local/bin/controllers-off.sh
+    systemctl daemon-reload 2>/dev/null || true
     unmark ctrl
-    say "Removed."
-}
-
-# ================================================================ ANDROID ===
-
-WAYDROID_IMG_DIR=/etc/waydroid-extra/images
-ATV_OTA_SYS=https://waydroid-atv.github.io/ota/a16-tv/system
-ATV_OTA_VEN=https://waydroid-atv.github.io/ota/a16-tv/vendor
-
-atv_install() {
-    say "Android TV (Waydroid) for game mode"
-
-    pacman -S --needed --noconfirm waydroid cage wlr-randr unzip
-
-    # Prefer local WayDroid-ATV image zips; fall back to the OTA channel.
-    printf 'Folder with the WayDroid-ATV system/vendor zips [%s/Downloads]: ' "$REAL_HOME"
-    read -r zipdir
-    [ -n "$zipdir" ] || zipdir="$REAL_HOME/Downloads"
-    sys=$(ls -t "$zipdir"/*waydroid_tv*system*.zip 2>/dev/null | head -1)
-    ven=$(ls -t "$zipdir"/*waydroid_tv*vendor*.zip 2>/dev/null | head -1)
-
-    if [ -n "$sys" ] && [ -n "$ven" ]; then
-        say "Using local images: $(basename "$sys") + $(basename "$ven")"
-        mkdir -p "$WAYDROID_IMG_DIR"
-        unzip -o -q "$sys" -d "$WAYDROID_IMG_DIR"
-        unzip -o -q "$ven" -d "$WAYDROID_IMG_DIR"
-        waydroid init -f || { warn "waydroid init failed"; return 1; }
-    else
-        say "No local image zips found — initialising from the WayDroid-ATV OTA channel"
-        waydroid init -f -c "$ATV_OTA_SYS" -v "$ATV_OTA_VEN" -r lineage -s GAPPS \
-            || { warn "waydroid init failed"; return 1; }
-    fi
-
-    systemctl enable --now waydroid-container || \
-        warn "check: systemctl status waydroid-container"
-
-    # Let Android see the controller directly.
-    if runuser -u "$REAL_USER" -- waydroid prop set persist.waydroid.uevent true 2>/dev/null && \
-       runuser -u "$REAL_USER" -- waydroid prop set persist.waydroid.udev true 2>/dev/null; then
-        say "Controller passthrough enabled"
-    else
-        warn "Couldn't set the controller props yet (they need a running session)."
-        warn "After the first launch, run once:"
-        warn "  waydroid prop set persist.waydroid.uevent true"
-        warn "  waydroid prop set persist.waydroid.udev true"
-        warn "  waydroid session stop"
-    fi
-
-    # Passwordless rule for exactly one command: re-adding an input device so
-    # Android notices Steam's virtual pad. Validated before it goes live,
-    # because a broken sudoers file can lock you out of sudo.
-    tmp=$(mktemp)
-    echo "$REAL_USER ALL=(root) NOPASSWD: /usr/bin/tee /sys/class/input/event*/uevent" > "$tmp"
-    if visudo -cf "$tmp" >/dev/null 2>&1; then
-        install -m 440 -o root -g root "$tmp" /etc/sudoers.d/waydroid-udev
-        say "sudoers rule installed"
-    else
-        warn "sudoers rule failed validation — not installed; controller won't auto-attach"
-    fi
-    rm -f "$tmp"
-
-    cat > "$REAL_HOME/waydroid-tv.sh" << 'LAUNCH'
-#!/bin/bash
-# Android TV (Waydroid) launcher for game mode
-cage -- bash -c '
-  OUT=$(wlr-randr | head -1 | cut -d" " -f1)
-  wlr-randr --output "$OUT" --custom-mode 1920x1080 2>/dev/null
-  waydroid show-full-ui 2>&1 | while read -r line; do
-    case "$line" in
-      *"is ready"*)
-        sleep 2
-        for d in /sys/class/input/event*; do
-          n=$(cat "$d/device/name" 2>/dev/null)
-          case "$n" in "Microsoft X-Box 360 pad"*) sudo -n tee "$d/uevent" <<< add ;; esac
-        done
-        ;;
-    esac
-  done
-'
-waydroid session stop
-LAUNCH
-    chmod +x "$REAL_HOME/waydroid-tv.sh"
-    chown "$REAL_USER" "$REAL_HOME/waydroid-tv.sh"
-
-    mark atv
-    say "Done. Last manual step, in desktop mode:"
-    say "Steam -> Games -> Add a Non-Steam Game -> $REAL_HOME/waydroid-tv.sh"
-    say "Rename it \"Android TV\". Steam Input MUST be on for that shortcut —"
-    say "the virtual pad Android uses only exists while Steam Input is enabled."
-}
-
-atv_revert() {
-    say "Removing Android TV (Waydroid)"
-    runuser -u "$REAL_USER" -- waydroid session stop 2>/dev/null || true
-    systemctl disable --now waydroid-container 2>/dev/null || true
-    rm -f /etc/sudoers.d/waydroid-udev "$REAL_HOME/waydroid-tv.sh"
-
-    if confirm "Delete Android data and images too? (apps, logins, everything)"; then
-        rm -rf /var/lib/waydroid "$REAL_HOME/.local/share/waydroid" "$WAYDROID_IMG_DIR"
-        rmdir /etc/waydroid-extra 2>/dev/null || true
-        rm -f "$REAL_HOME"/.local/share/applications/waydroid.*.desktop
-    fi
-    if confirm "Uninstall the waydroid, cage and wlr-randr packages?"; then
-        pacman -Rns --noconfirm waydroid cage wlr-randr || warn "package removal failed"
-    fi
-    unmark atv
-    say "Removed. Delete the Android TV shortcut from Steam by hand."
+    return 0
 }
 
 # ========================================================= CONTROL CENTER ===
@@ -1271,16 +1125,9 @@ show_status() {
     _unit_line "cec-guide" cec-guide.service "$_w"
     _file_line "udev fallback" /etc/udev/rules.d/99-cec-controller.rules no
 
-    # ---- 5. Controllers off
+    # ---- 5. Decky
     echo
-    printf '  5. Controllers off                [%s]\n' "$(status ctrl)"
-    _w=no; is_done ctrl && _w=yes
-    _file_line "controllers-off.sh" /usr/local/bin/controllers-off.sh "$_w"
-    _unit_line "controllers-off" controllers-off.service "$_w"
-
-    # ---- 6. Decky
-    echo
-    printf '  6. Decky plugins                  [%s]\n' "$(status decky)"
+    printf '  5. Decky plugins                  [%s]\n' "$(status decky)"
     if decky_present; then
         _ok "Decky Loader" "$REAL_HOME/homebrew"
     else
@@ -1300,9 +1147,9 @@ show_status() {
         _bad "Discord creds" "not set — reinstall option 6 to enter them"
     fi
 
-    # ---- 7. Android TV
+    # ---- 6. Android TV
     echo
-    printf '  7. Android TV (Waydroid)          [%s]\n' "$(status atv)"
+    printf '  6. Android TV (Waydroid)          [%s]\n' "$(status atv)"
     _w=no; is_done atv && _w=yes
     if command -v waydroid >/dev/null 2>&1; then _ok "waydroid" "installed"
     elif [ "$_w" = yes ]; then _bad "waydroid" "not installed"
@@ -1311,9 +1158,9 @@ show_status() {
     _file_line "launcher" "$REAL_HOME/waydroid-tv.sh" "$_w"
     _file_line "sudoers rule" /etc/sudoers.d/waydroid-udev "$_w"
 
-    # ---- 8. Control Center
+    # ---- 7. Control Center
     echo
-    printf '  8. BC-250 Control Center          [%s]\n' "$(status ctlcenter)"
+    printf '  7. BC-250 Control Center          [%s]\n' "$(status ctlcenter)"
     if pacman -Qq bc250-control-center-git >/dev/null 2>&1; then
         _ok "package" "$(pacman -Q bc250-control-center-git 2>/dev/null)"
     elif is_done ctlcenter; then
@@ -1442,7 +1289,6 @@ refresh_installed() {
     if is_done cec;   then cec_install   || warn "cec refresh failed";   _did=1; fi
     if is_done power; then power_install || warn "power refresh failed"; _did=1; fi
     if is_done guide; then guide_install || warn "guide refresh failed"; _did=1; fi
-    if is_done ctrl;  then ctrl_install  || warn "controllers refresh failed"; _did=1; fi
     if [ "$_did" -eq 0 ]; then
         say "Nothing installed that this script writes directly."
     fi
@@ -1468,7 +1314,6 @@ install_all() {
     led_install   || warn "led failed"
     power_install || warn "power failed"
     guide_install || warn "guide failed"
-    ctrl_install  || warn "controllers failed"
     ctlcenter_install || warn "control center failed"
     atv_install   || warn "android tv failed"
     decky_install || warn "decky skipped"
@@ -1483,11 +1328,10 @@ revert_menu() {
   2) LED strip daemon       [$(status led)]
   3) Power button / suspend [$(status power)]
   4) Guide button -> input  [$(status guide)]
-  5) Controllers off        [$(status ctrl)]
-  6) Decky plugins          [$(status decky)]
-  7) Android TV (Waydroid)  [$(status atv)]
-  8) BC-250 Control Center  [$(status ctlcenter)]
-  9) Revert everything
+  5) Decky plugins          [$(status decky)]
+  6) Android TV (Waydroid)  [$(status atv)]
+  7) BC-250 Control Center  [$(status ctlcenter)]
+  8) Revert everything
   b) Back
 MENU
         printf '\nChoice: '
@@ -1497,15 +1341,13 @@ MENU
             2) led_revert   || true; pause ;;
             3) power_revert || true; pause ;;
             4) guide_revert || true; pause ;;
-            5) ctrl_revert  || true; pause ;;
-            6) decky_revert || true; pause ;;
-            7) atv_revert   || true; pause ;;
-            8) ctlcenter_revert || true; pause ;;
-            9) if confirm "Revert everything?"; then
+            5) decky_revert || true; pause ;;
+            6) atv_revert   || true; pause ;;
+            7) ctlcenter_revert || true; pause ;;
+            8) if confirm "Revert everything?"; then
                    ctlcenter_revert || true
                    atv_revert   || true
                    decky_revert || true
-                   ctrl_revert  || true
                    guide_revert || true
                    power_revert || true
                    led_revert   || true
@@ -1519,6 +1361,7 @@ MENU
 }
 
 main_menu() {
+    ctrl_cleanup || true
     if [ -e "$REFRESH_FLAG" ]; then
         echo
         say "This script was updated after these components were installed, so"
@@ -1539,10 +1382,9 @@ main_menu() {
   2) LED strip daemon       [$(status led)]
   3) Power button / suspend [$(status power)]
   4) Guide button -> input  [$(status guide)]
-  5) Controllers off        [$(status ctrl)]
-  6) Decky plugins          [$(status decky)]
-  7) Android TV (Waydroid)  [$(status atv)]
-  8) BC-250 Control Center  [$(status ctlcenter)]
+  5) Decky plugins          [$(status decky)]
+  6) Android TV (Waydroid)  [$(status atv)]
+  7) BC-250 Control Center  [$(status ctlcenter)]
 
   a) Install all
   s) Status — what is actually installed
@@ -1558,10 +1400,9 @@ MENU
             2) led_install   || true; pause ;;
             3) power_install || true; pause ;;
             4) guide_install || true; pause ;;
-            5) ctrl_install  || true; pause ;;
-            6) decky_install || true; pause ;;
-            7) atv_install   || true; pause ;;
-            8) ctlcenter_install || true; pause ;;
+            5) decky_install || true; pause ;;
+            6) atv_install   || true; pause ;;
+            7) ctlcenter_install || true; pause ;;
             a|A) install_all; pause ;;
             s|S) show_status || true; pause ;;
             t|T) cec_test || true; pause ;;

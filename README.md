@@ -14,10 +14,9 @@ sudo sh bc250-setup.sh
   2) LED strip daemon       [not installed]
   3) Power button / suspend [not installed]
   4) Guide button -> input  [not installed]
-  5) Controllers off        [not installed]
-  6) Decky plugins          [not installed]
-  7) Android TV (Waydroid)  [not installed]
-  8) BC-250 Control Center  [not installed]
+  5) Decky plugins          [not installed]
+  6) Android TV (Waydroid)  [not installed]
+  7) BC-250 Control Center  [not installed]
 
   a) Install all
   s) Status — what is actually installed
@@ -102,18 +101,7 @@ controller connect, as a fallback if Steam grabs the pad exclusively.
 Check Steam isn't eating the button first: `sudo evtest`, press guide, look
 for `BTN_MODE`.
 
-### 5. Controllers off
-
-Disconnects Bluetooth controllers just before a poweroff, so the ESP32 power
-switch doesn't see a reconnecting pad and turn the board straight back on.
-Runs on poweroff only, not reboot.
-
-DualSense and DS4 read a host-initiated disconnect as "turn off". 8BitDo and
-Xbox pads go back to advertising until their own idle timer fires — for
-those the real fix is on the ESP32 side (only count a wake once the pad has
-been silent for ~10s).
-
-### 6. Decky plugins
+### 5. Decky plugins
 
 Three plugins are embedded in the script as base64 — no separate files
 needed:
@@ -147,7 +135,7 @@ Discord has no anonymous path for this — the client ID identifies the app to
 the local RPC socket and the secret is required to exchange the auth code for
 a token, so every install needs its own application.
 
-### 7. Android TV (Waydroid)
+### 6. Android TV (Waydroid)
 
 Installs `waydroid`, `cage` and `wlr-randr`, initialises a WayDroid-ATV
 image (local zips if present in Downloads, otherwise the OTA channel),
@@ -162,7 +150,7 @@ that virtual pad won't exist and Android will see no controller at all.
 Still manual: adding `~/waydroid-tv.sh` to Steam as a non-Steam game, and
 Button Mapper inside Android for the Xbox button.
 
-### 8. BC-250 Control Center
+### 7. BC-250 Control Center
 
 Installs [movacx/bc250-control-center](https://github.com/movacx/bc250-control-center)
 from the AUR (`bc250-control-center-git`) — system monitoring, GPU control,
