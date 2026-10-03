@@ -60,7 +60,31 @@ the TV off the adapter hands the driver a fallback EDID, and the graphical
 session can fail to come up on that — which would stop the very service meant
 to turn the TV on from ever running.
 
-Whether this can work at all depends on the display. The adapter is powered
+It is deliberately not ordered `After=bc250-cec.service`: that service is
+itself `After=graphical.target`, which closes a loop, and systemd breaks an
+ordering cycle by deleting one of the jobs — ours. The symptom is an empty
+journal and a service that silently never ran.
+
+### Wake-on-LAN
+
+Installing the CEC component asks for the TV's MAC address, optionally. If
+given, the boot path sends a magic packet before touching CEC at all.
+
+This exists because the CEC physical address is derived from the display's
+EDID. A TV that stops answering while in standby leaves it at `f.f.f.f`, so
+no logical address can be claimed and nothing can be transmitted — there is
+no wake command to send. The adapter even supplies its own fallback EDID, so
+the link reads as connected while the display is electrically absent. The
+adapter's capability mask also lacks `CEC_CAP_PHYS_ADDR`, so the address
+cannot be set by hand to work around it.
+
+Wake-on-LAN goes over the network and does not care about HDMI. Once the
+panel is on it answers EDID again and the CEC side claims the input as usual.
+Turn on network standby first — Samsung: Settings → General → Network →
+Expert Settings → Power On with Mobile. Find the MAC with the TV on:
+`ip neigh | grep 192.168`. Test it any time with `tv-wol <mac>`.
+
+Whether the CEC route alone can work depends on the display. The adapter is powered
 from the DisplayPort connector, so a full poweroff kills it; on the next boot
 it has to read EDID afresh from a display that is in standby. A set that does
 not answer leaves the physical address at `f.f.f.f`, no logical address can be

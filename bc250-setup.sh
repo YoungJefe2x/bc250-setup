@@ -129,6 +129,79 @@ cec_install() {
 
     pacman -S --needed --noconfirm v4l-utils
 
+    # Wake-on-LAN, for displays that drop HDMI entirely in standby. The CEC
+    # physical address comes from the display's EDID; a set that stops
+    # answering while off leaves it at f.f.f.f, no logical address can be
+    # claimed and nothing can be transmitted at all. A magic packet goes over
+    # the network instead, so it does not care about HDMI.
+    cat > /usr/local/bin/tv-wol << 'SCRIPT'
+#!/bin/sh
+# tv-wol — send a Wake-on-LAN magic packet
+# usage: tv-wol <mac> [broadcast]
+[ -n "$1" ] || { echo "usage: tv-wol <mac> [broadcast]" >&2; exit 1; }
+_bcast="$2"
+if [ -z "$_bcast" ]; then
+    _bcast=$(ip -4 -o addr show scope global 2>/dev/null |
+             awk '{for (i = 1; i <= NF; i++) if ($i == "brd") print $(i + 1)}' |
+             head -1)
+fi
+exec python3 - "$1" "${_bcast:-255.255.255.255}" <<'PY'
+import socket, sys
+
+mac = sys.argv[1].replace(":", "").replace("-", "").replace(".", "")
+if len(mac) != 12:
+    sys.exit("tv-wol: '%s' is not a MAC address" % sys.argv[1])
+packet = b"\xff" * 6 + bytes.fromhex(mac) * 16
+
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+sent = 0
+# Both the subnet broadcast and the global one, on both ports WoL uses: which
+# combination a given TV listens on is not consistent between models.
+for addr in {sys.argv[2], "255.255.255.255"}:
+    for port in (9, 7):
+        try:
+            s.sendto(packet, (addr, port))
+            sent += 1
+        except OSError as e:
+            print("tv-wol: %s:%d — %s" % (addr, port, e), file=sys.stderr)
+sys.exit(0 if sent else 1)
+PY
+SCRIPT
+    chmod +x /usr/local/bin/tv-wol
+
+    # Keep an existing MAC across reinstalls.
+    _mac=""
+    [ -r /etc/cec-tv.conf ] && . /etc/cec-tv.conf && _mac="$TV_MAC"
+    echo
+    if [ -n "$_mac" ]; then
+        say "Wake-on-LAN is set for $_mac"
+        confirm "Change it?" && _mac=""
+    fi
+    if [ -z "$_mac" ]; then
+        echo "  Some TVs drop HDMI completely in standby, which makes a CEC wake"
+        echo "  impossible from a cold boot — there is no address to send to."
+        echo "  Wake-on-LAN goes over the network instead and sidesteps that."
+        echo
+        echo "  On the TV, turn on network standby first:"
+        echo "    Samsung: Settings - General - Network - Expert Settings -"
+        echo "             Power On with Mobile  (and/or IP Remote)"
+        echo "    LG:      Settings - General - Mobile TV On / Turn on via Wi-Fi"
+        echo
+        echo "  Find its MAC with the TV ON:   ip neigh | grep 192.168"
+        echo "  Leave blank to skip Wake-on-LAN."
+        echo
+        printf '  TV MAC address: '
+        read -r _mac
+    fi
+    if [ -n "$_mac" ]; then
+        printf 'TV_MAC=%s\n' "$_mac" > /etc/cec-tv.conf
+        say "Saved. Test it any time with: tv-wol $_mac"
+    else
+        rm -f /etc/cec-tv.conf
+        say "No Wake-on-LAN configured."
+    fi
+
     cat > /usr/local/bin/cec-tv << 'SCRIPT'
 #!/bin/sh
 # cec-tv — control the TV over HDMI-CEC
@@ -296,8 +369,20 @@ case "$1" in
         cec-ctl -d "$DEV" --to 0 --standby >/dev/null 2>&1
         ;;
     boot-on)
-        # Cold boot: the adapter, the link and bc250-cec are all still coming
-        # up, so be patient here rather than firing once and hoping.
+        # If the display drops HDMI in standby there is no CEC address to send
+        # to, so try the network first — that wake does not depend on HDMI at
+        # all. Once the panel is on it starts answering EDID again and the CEC
+        # side below can claim the input.
+        if [ -r /etc/cec-tv.conf ]; then
+            . /etc/cec-tv.conf
+            if [ -n "$TV_MAC" ]; then
+                echo "cec-tv: sending Wake-on-LAN to $TV_MAC"
+                /usr/local/bin/tv-wol "$TV_MAC" || echo "cec-tv: WoL failed" >&2
+                sleep 8
+            fi
+        fi
+        # Cold boot: the adapter and the link are still coming up, so be
+        # patient here rather than firing once and hoping.
         wait_for_bus 60 || exit 0
         tv_on
         ;;
@@ -341,8 +426,12 @@ Description=HDMI-CEC TV wake at boot (alongside bc250-cec)
 # multi-user.target, not graphical.target: with the TV off the adapter hands
 # the driver a fallback EDID and the graphical session can fail to come up,
 # which would stop the very service meant to turn the TV on from ever running.
-After=multi-user.target bc250-cec.service
-Wants=bc250-cec.service
+#
+# Deliberately NOT ordered After=bc250-cec.service. That service is itself
+# After=graphical.target, which closes a loop (us -> bc250-cec -> graphical ->
+# us) and systemd breaks such a cycle by deleting one job -- ours. We do not
+# need it anyway: cec-tv registers the adapter itself when the mask is clear.
+After=multi-user.target
 
 [Service]
 Type=oneshot
@@ -480,7 +569,9 @@ cec_revert() {
     systemctl disable cec-standby.service 2>/dev/null || true
     rm -f /etc/systemd/system/cec.service \
           /etc/systemd/system/cec-standby.service \
-          /usr/local/bin/cec-tv
+          /usr/local/bin/cec-tv \
+          /usr/local/bin/tv-wol \
+          /etc/cec-tv.conf
     systemctl daemon-reload
     unmark cec
     say "Removed. v4l-utils was left installed."
