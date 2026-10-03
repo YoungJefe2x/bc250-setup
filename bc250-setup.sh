@@ -338,7 +338,10 @@ SCRIPT
         cat > /etc/systemd/system/cec.service << 'UNIT'
 [Unit]
 Description=HDMI-CEC TV wake at boot (alongside bc250-cec)
-After=graphical.target bc250-cec.service
+# multi-user.target, not graphical.target: with the TV off the adapter hands
+# the driver a fallback EDID and the graphical session can fail to come up,
+# which would stop the very service meant to turn the TV on from ever running.
+After=multi-user.target bc250-cec.service
 Wants=bc250-cec.service
 
 [Service]
@@ -348,13 +351,13 @@ ExecStart=/usr/local/bin/cec-tv boot-on
 TimeoutStartSec=180
 
 [Install]
-WantedBy=graphical.target
+WantedBy=multi-user.target
 UNIT
     else
         cat > /etc/systemd/system/cec.service << 'UNIT'
 [Unit]
 Description=HDMI-CEC TV control
-After=graphical.target
+After=multi-user.target
 
 [Service]
 Type=simple
@@ -366,7 +369,7 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=graphical.target
+WantedBy=multi-user.target
 UNIT
     fi
 
@@ -666,7 +669,7 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=graphical.target
+WantedBy=multi-user.target
 UNIT
 
     systemctl daemon-reload

@@ -55,6 +55,11 @@ wait it forces a DP re-detect through `trigger_hotplug` — the same debugfs
 poke bc250-cec uses — because a display in standby often ignores the first
 EDID read after the adapter powers up.
 
+The boot unit is wanted by `multi-user.target`, not `graphical.target`. With
+the TV off the adapter hands the driver a fallback EDID, and the graphical
+session can fail to come up on that — which would stop the very service meant
+to turn the TV on from ever running.
+
 Whether this can work at all depends on the display. The adapter is powered
 from the DisplayPort connector, so a full poweroff kills it; on the next boot
 it has to read EDID afresh from a display that is in standby. A set that does
