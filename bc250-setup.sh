@@ -175,16 +175,71 @@ resume_bc250_cec() {
     return 0
 }
 
+tv_power_state() {
+    cec-ctl -d "$DEV" --to 0 --give-device-power-status 2>/dev/null |
+        awk '/pwr-state/ {print $2; exit}'
+}
+
+# Wait for the adapter to exist AND for the TV to have handed us a physical
+# address. Straight after a cold boot the DP link is still settling and the
+# address reads back as f.f.f.f; an adapter in that state cannot claim a
+# logical address, so anything sent at that point goes nowhere. This is what
+# a fixed `sleep 3` got wrong.
+wait_for_bus() {
+    _limit=${1:-60}
+    _n=0
+    while [ "$_n" -lt "$_limit" ]; do
+        if [ -e "$DEV" ]; then
+            _pa=$(get_pa)
+            case "$_pa" in
+                ""|f.f.f.f) : ;;
+                *) echo "cec-tv: bus ready after ${_n}s, physical address $_pa"
+                   return 0 ;;
+            esac
+        fi
+        _n=$((_n + 1))
+        sleep 1
+    done
+    echo "cec-tv: no usable CEC address after ${_limit}s — giving up" >&2
+    return 1
+}
+
+tv_on() {
+    ensure_registered
+    # A TV in standby can ignore the first Image View On while its own HDMI
+    # receiver is still coming up, so send it a few times and check the answer.
+    _try=1
+    while [ "$_try" -le 4 ]; do
+        cec-ctl -d "$DEV" --to 0 --image-view-on >/dev/null 2>&1
+        sleep 3
+        _st=$(tv_power_state)
+        case "$_st" in
+            on|to-on)
+                echo "cec-tv: TV reports '$_st' after $_try attempt(s)"
+                break ;;
+        esac
+        echo "cec-tv: attempt $_try — TV reports '${_st:-no answer}', retrying"
+        _try=$((_try + 1))
+    done
+
+    # Re-register: the link often drops and returns as the TV wakes, which
+    # clears the logical address we claimed above.
+    ensure_registered
+    pa=$(get_pa)
+    if [ -n "$pa" ] && [ "$pa" != "f.f.f.f" ]; then
+        cec-ctl -d "$DEV" --active-source phys-addr="$pa" >/dev/null 2>&1
+        echo "cec-tv: claimed active source $pa"
+    else
+        echo "cec-tv: no valid physical address — did not claim active source" >&2
+    fi
+    resume_bc250_cec
+}
+
 case "$1" in
     register) register ;;
     on)
-        ensure_registered
-        cec-ctl -d "$DEV" --to 0 --image-view-on >/dev/null 2>&1
-        sleep 2
-        pa=$(get_pa)
-        [ -n "$pa" ] && [ "$pa" != "f.f.f.f" ] && \
-            cec-ctl -d "$DEV" --active-source phys-addr="$pa" >/dev/null 2>&1
-        resume_bc250_cec
+        wait_for_bus 15 || exit 1
+        tv_on
         ;;
     off)
         pause_bc250_cec
@@ -192,8 +247,10 @@ case "$1" in
         cec-ctl -d "$DEV" --to 0 --standby >/dev/null 2>&1
         ;;
     boot-on)
-        sleep 3
-        "$0" on
+        # Cold boot: the adapter, the link and bc250-cec are all still coming
+        # up, so be patient here rather than firing once and hoping.
+        wait_for_bus 60 || exit 0
+        tv_on
         ;;
     poweroff-standby)
         # Run by cec-standby.service as poweroff.target is reached — i.e. after
@@ -239,6 +296,7 @@ Wants=bc250-cec.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/cec-tv boot-on
+TimeoutStartSec=180
 
 [Install]
 WantedBy=graphical.target
@@ -254,6 +312,7 @@ Type=simple
 ExecStartPre=/usr/local/bin/cec-tv register
 ExecStart=/usr/bin/cec-follower -d /dev/cec0
 ExecStartPost=/usr/local/bin/cec-tv boot-on
+TimeoutStartSec=180
 Restart=on-failure
 RestartSec=5
 
@@ -339,6 +398,8 @@ cec_test() {
             *) warn "The standby unit is not enabled — the TV will not sleep on"
                warn "poweroff. Re-run option 1 to install the current version." ;;
         esac
+        say "This boot's wake attempt:"
+        journalctl -b -u cec.service --no-pager -q 2>/dev/null | tail -8 | sed 's/^/    /'
         say "Last poweroff standby attempt:"
         journalctl -b -1 -u cec-standby.service --no-pager -q 2>/dev/null | tail -5 | sed 's/^/    /'
     else

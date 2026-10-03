@@ -45,6 +45,16 @@ Two variants, chosen automatically:
   address would flap.
 - **Without it:** the full version, running `cec-follower` itself.
 
+Waking at boot waits for the bus rather than firing on a timer. Straight
+after a cold boot the DP link is still settling and the physical address
+reads back as `f.f.f.f`; an adapter in that state cannot claim a logical
+address, so anything sent then goes nowhere. `boot-on` polls for up to 60s
+until the address is valid, sends Image View On up to four times, and checks
+the TV's reported power state between attempts — a set in standby often
+ignores the first one while its own HDMI receiver comes up. It re-registers
+before claiming active source, because the link usually drops and returns as
+the TV wakes. Progress goes to the journal: `journalctl -b -u cec.service`.
+
 Standby at poweroff is a separate unit (`cec-standby.service`) started as
 `poweroff.target` is reached, not an `ExecStop` on the boot unit. By that
 point every normal service is already stopped, `bc250-cec` included, so
