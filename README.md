@@ -157,7 +157,10 @@ logind drop-in setting `HandlePowerKey=poweroff`.
 
 Pressing the controller's guide button wakes the TV and claims the input.
 An evdev listener watches for `BTN_MODE` with a 3-second debounce (guide is
-also Steam's menu button). Optionally adds a udev rule that does the same on
+also Steam's menu button). It opens each input device at most once and then
+holds it, caching which paths are not gamepads, so at steady state it opens
+nothing: repeatedly reopening the keyboard and pad to re-read their
+capabilities left the controller dead in game mode until a key was pressed. Optionally adds a udev rule that does the same on
 controller connect, as a fallback if Steam grabs the pad exclusively.
 
 Check Steam isn't eating the button first: `sudo evtest`, press guide, look
