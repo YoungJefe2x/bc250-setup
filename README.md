@@ -77,8 +77,11 @@ reports both the stale link and a cycle recorded this boot.
 A display that stops answering DDC in standby cannot be woken over CEC at
 all: the physical address never becomes valid, so there is no logical address
 and nothing to transmit. `cec-watch.service` covers that case from the other
-side — it polls for the address and, the moment the display comes back on its
-own remote, claims the input. The box still lands on screen without anyone
+side. While there is no address it forces a DP re-detect every 15s, because
+the link sits on the adapter's own fallback EDID picked up while the display
+was off and does not re-read it by itself — the address stays invalid even
+after the display is switched back on. Once a re-detect pulls the real EDID
+through, it claims the input. The box still lands on screen without anyone
 reaching for the TV's source button.
 
 Whether the CEC wake itself can work depends on the display. The adapter is powered

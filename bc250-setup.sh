@@ -287,8 +287,16 @@ tv_on() {
 case "$1" in
     register) register ;;
     on)
-        wait_for_bus 15 || exit 1
-        tv_on
+        # Resume bc250-cec even when this fails: `off` stopped it, and leaving
+        # it stopped means nothing replugs the link when the display returns,
+        # so the adapter keeps serving its fallback EDID and the address stays
+        # invalid forever -- CEC then looks dead even with the TV switched on.
+        if wait_for_bus 15; then
+            tv_on
+        else
+            resume_bc250_cec
+            exit 1
+        fi
         ;;
     off)
         pause_bc250_cec
@@ -308,6 +316,9 @@ case "$1" in
         # address appears and we claim the input, so the box still lands on
         # screen by itself without anyone touching the TV's source button.
         _was=0
+        _n=0
+        # Clear a pause left behind by an interrupted `cec-tv off`.
+        resume_bc250_cec
         while :; do
             _pa=$(get_pa 2>/dev/null)
             case "$_pa" in
@@ -319,6 +330,19 @@ case "$1" in
                 sleep 3
                 ensure_registered
                 cec-ctl -d "$DEV" --active-source phys-addr="$_pa" >/dev/null 2>&1
+            fi
+            # No address means the link is probably sitting on the adapter's
+            # own fallback EDID, picked up while the display was off. It does
+            # not re-read on its own, so the address stays invalid even after
+            # the display is switched back on. A re-detect is what makes it
+            # read the real EDID; keep nudging until one sticks.
+            if [ "$_now" = 0 ]; then
+                _n=$((_n + 1))
+                if [ $((_n % 3)) -eq 0 ]; then
+                    force_hotplug >/dev/null 2>&1 || true
+                fi
+            else
+                _n=0
             fi
             _was=$_now
             sleep 5
