@@ -124,6 +124,7 @@ cec_install() {
 #!/bin/sh
 # cec-tv — control the TV over HDMI-CEC
 # usage: cec-tv {register|on|off|cycle [secs]|status|monitor}
+#   (boot-on and poweroff-standby are for the systemd units, not for typing)
 DEV=/dev/cec0
 OSD="CachyOS"
 
@@ -186,14 +187,18 @@ case "$1" in
         sleep 3
         "$0" on
         ;;
-    shutdown-off)
-        # Only sleep the TV for a real poweroff, not a reboot.
-        if systemctl list-jobs 2>/dev/null | grep -qE 'reboot\.target.*start'; then
-            exit 0
-        fi
-        pause_bc250_cec
+    poweroff-standby)
+        # Run by cec-standby.service as poweroff.target is reached — i.e. after
+        # every normal service has already been stopped, bc250-cec included.
+        # Nothing is left to replug the link, so no systemctl call is needed
+        # here (and calling one mid-shutdown can block until the unit times
+        # out, which is what killed the earlier ExecStop version). The unit is
+        # wanted only by poweroff/halt, so a reboot never reaches this.
+        [ -e "$DEV" ] || exit 0
         ensure_registered
         cec-ctl -d "$DEV" --to 0 --standby >/dev/null 2>&1
+        # Give the TV a moment to act before the board cuts power.
+        sleep 2
         ;;
     status)  cec-ctl -d "$DEV" --to 0 --give-device-power-status ;;
     cycle)
@@ -210,15 +215,15 @@ esac
 SCRIPT
     chmod +x /usr/local/bin/cec-tv
 
-    # Two flavours of the unit. If bc250-cec is present it already registers
-    # the adapter and answers the TV's queries, so running our own cec-follower
-    # would be a second claimant on /dev/cec0 — that is what makes the logical
-    # address flap. In that case ours is hooks only.
+    # Two flavours of the boot unit. If bc250-cec is present it already
+    # registers the adapter and answers the TV's queries, so running our own
+    # cec-follower would be a second claimant on /dev/cec0 — that is what makes
+    # the logical address flap. In that case ours only does the boot wake.
     if systemctl list-unit-files 2>/dev/null | grep -q '^bc250-cec'; then
-        say "bc250-cec detected — installing hooks only (no second follower)"
+        say "bc250-cec detected — boot hook only (no second follower)"
         cat > /etc/systemd/system/cec.service << 'UNIT'
 [Unit]
-Description=HDMI-CEC TV control (alongside bc250-cec)
+Description=HDMI-CEC TV wake at boot (alongside bc250-cec)
 After=graphical.target bc250-cec.service
 Wants=bc250-cec.service
 
@@ -226,8 +231,6 @@ Wants=bc250-cec.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/cec-tv boot-on
-ExecStop=/usr/local/bin/cec-tv shutdown-off
-TimeoutStopSec=15
 
 [Install]
 WantedBy=graphical.target
@@ -243,8 +246,6 @@ Type=simple
 ExecStartPre=/usr/local/bin/cec-tv register
 ExecStart=/usr/bin/cec-follower -d /dev/cec0
 ExecStartPost=/usr/local/bin/cec-tv boot-on
-ExecStop=/usr/local/bin/cec-tv shutdown-off
-TimeoutStopSec=10
 Restart=on-failure
 RestartSec=5
 
@@ -253,8 +254,35 @@ WantedBy=graphical.target
 UNIT
     fi
 
+    # Standby is its own unit, started as poweroff.target is reached rather
+    # than hung off the boot unit's ExecStop. Three reasons that matters:
+    #   - ExecStop runs while the rest of the system is still being torn down,
+    #     and ordering put it BEFORE bc250-cec stopped, so bc250-cec was still
+    #     live to replug the link and wake the TV straight back up;
+    #   - calling `systemctl stop bc250-cec` from inside a shutdown transaction
+    #     can block until the unit's own stop timeout kills it, so the standby
+    #     never went out at all;
+    #   - being wanted only by poweroff/halt means a reboot never triggers it,
+    #     with no need to guess from the job list.
+    cat > /etc/systemd/system/cec-standby.service << 'UNIT'
+[Unit]
+Description=HDMI-CEC TV standby at poweroff
+DefaultDependencies=no
+After=bc250-cec.service
+Before=poweroff.target halt.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cec-tv poweroff-standby
+TimeoutStartSec=20
+
+[Install]
+WantedBy=poweroff.target halt.target
+UNIT
+
     systemctl daemon-reload
     systemctl enable --now cec.service || warn "service failed to start; check: systemctl status cec.service"
+    systemctl enable cec-standby.service || warn "could not enable cec-standby.service"
     mark cec
     say "Done. Manual control: cec-tv on | cec-tv off | cec-tv cycle"
 }
@@ -295,7 +323,16 @@ cec_test() {
     fi
 
     if is_done cec; then
-        say "cec.service: $(systemctl is-enabled cec.service 2>/dev/null || echo unknown)"
+        say "cec.service (boot wake): $(systemctl is-enabled cec.service 2>/dev/null || echo unknown)"
+        _sb=$(systemctl is-enabled cec-standby.service 2>/dev/null || echo missing)
+        say "cec-standby.service (poweroff): $_sb"
+        case "$_sb" in
+            enabled) : ;;
+            *) warn "The standby unit is not enabled — the TV will not sleep on"
+               warn "poweroff. Re-run option 1 to install the current version." ;;
+        esac
+        say "Last poweroff standby attempt:"
+        journalctl -b -1 -u cec-standby.service --no-pager -q 2>/dev/null | tail -5 | sed 's/^/    /'
     else
         warn "The CEC component is not installed — option 1 installs it."
     fi
@@ -319,7 +356,10 @@ cec_test() {
 cec_revert() {
     say "Removing HDMI-CEC TV control"
     systemctl disable --now cec.service 2>/dev/null || true
-    rm -f /etc/systemd/system/cec.service /usr/local/bin/cec-tv
+    systemctl disable cec-standby.service 2>/dev/null || true
+    rm -f /etc/systemd/system/cec.service \
+          /etc/systemd/system/cec-standby.service \
+          /usr/local/bin/cec-tv
     systemctl daemon-reload
     unmark cec
     say "Removed. v4l-utils was left installed."

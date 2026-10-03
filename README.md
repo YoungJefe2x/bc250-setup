@@ -44,6 +44,15 @@ Two variants, chosen automatically:
   address would flap.
 - **Without it:** the full version, running `cec-follower` itself.
 
+Standby at poweroff is a separate unit (`cec-standby.service`) started as
+`poweroff.target` is reached, not an `ExecStop` on the boot unit. By that
+point every normal service is already stopped, `bc250-cec` included, so
+nothing is left to replug the link — and because the unit is wanted only by
+`poweroff.target`/`halt.target`, a reboot never triggers it. An `ExecStop`
+hook failed on both counts: it ran while `bc250-cec` was still live, and its
+`systemctl stop bc250-cec` call could block inside the shutdown transaction
+until the stop timeout killed it, so the standby never went out.
+
 `bc250-cec` replugs the DP link whenever the display changes power state.
 That replug re-announces the physical address, and a Samsung reads a source
 appearing as "wake up" — so a standby is undone a second later. `cec-tv`
