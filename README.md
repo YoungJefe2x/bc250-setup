@@ -72,26 +72,6 @@ enabling. `systemctl enable` adds links but never removes stale ones, so a
 rebuilding that cycle no matter what the unit file says. The `t` check
 reports both the stale link and a cycle recorded this boot.
 
-### Wake-on-LAN
-
-Optional, and off unless you ask for it: the CEC install offers it as a
-fallback and a single `n` skips it. If a MAC is given, the boot path sends a
-magic packet before touching CEC at all.
-
-This exists because the CEC physical address is derived from the display's
-EDID. A TV that stops answering while in standby leaves it at `f.f.f.f`, so
-no logical address can be claimed and nothing can be transmitted — there is
-no wake command to send. The adapter even supplies its own fallback EDID, so
-the link reads as connected while the display is electrically absent. The
-adapter's capability mask also lacks `CEC_CAP_PHYS_ADDR`, so the address
-cannot be set by hand to work around it.
-
-Wake-on-LAN goes over the network and does not care about HDMI. Once the
-panel is on it answers EDID again and the CEC side claims the input as usual.
-Turn on network standby first — Samsung: Settings → General → Network →
-Expert Settings → Power On with Mobile. Find the MAC with the TV on:
-`ip neigh | grep 192.168`. Test it any time with `tv-wol <mac>`.
-
 Whether the CEC route alone can work depends on the display. The adapter is powered
 from the DisplayPort connector, so a full poweroff kills it; on the next boot
 it has to read EDID afresh from a display that is in standby. A set that does
