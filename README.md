@@ -21,6 +21,7 @@ sudo sh bc250-setup.sh
 
   a) Install all
   t) Test HDMI-CEC
+  u) Update this script
   r) Revert / remove
   q) Quit
 ```
@@ -166,6 +167,27 @@ asks for a password partway through.
 After installing, launch it and choose **Prepare dependencies** on its
 dashboard — it detects the distro and pulls the governor, fan and CU tools
 itself. Revert removes the package but leaves those dependencies alone.
+
+## Updating
+
+`u` fetches the newest copy of the script from this repo and replaces the
+running one, so a box only ever needs the single file. It tries, in order:
+
+1. `git pull` — if the script sits in a git checkout. Runs as whoever owns
+   the checkout, so git doesn't refuse on ownership and no root-owned objects
+   are left behind.
+2. `gh` — works while the repo is private, if the CLI is signed in
+   (`pacman -S github-cli && gh auth login`).
+3. A plain `raw.githubusercontent.com` download — works once the repo is
+   public.
+
+The download is checked before it goes anywhere near the real path: it must
+parse as shell and contain this installer's own menu text, so a 404 page or
+a truncated transfer can't clobber a working copy. An identical file is
+reported as already current and nothing is written. Otherwise the old
+version is kept as `bc250-setup.sh.bak` and the new one moved into place with
+`mv`, which is a rename — the copy the running shell is still reading stays
+intact. It then offers to re-exec on the new version.
 
 ## Notes
 

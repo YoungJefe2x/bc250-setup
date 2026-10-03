@@ -15,12 +15,20 @@
 #
 # Every component can be installed and reverted independently. What has been
 # installed is recorded under /var/lib/bc250-setup so revert knows what to undo.
+#
+# `u` pulls a newer copy of this script from GitHub and replaces itself.
 
 set -e
 
 STATE_DIR=/var/lib/bc250-setup
 LED_SRC=/opt/bc250/bc250_ws2812b_controller
 LED_REPO=https://github.com/peterdk31/bc250_ws2812b_controller.git
+
+# Where `u) Update this script` pulls a newer copy from.
+SELF_OWNER=YoungJefe2x
+SELF_REPO=bc250-setup
+SELF_BRANCH=main
+SELF_FILE=bc250-setup.sh
 
 # ---------------------------------------------------------------- helpers ---
 
@@ -993,6 +1001,112 @@ decky_revert() {
     decky_loader_revert
 }
 
+# ================================================================= UPDATE ===
+
+# Fetch the newest copy of this script and replace the running one. Works from
+# a git checkout, from `gh` (which can see the repo while it is private), or
+# from a plain raw.githubusercontent.com download once the repo is public.
+self_update() {
+    say "Update this script"
+
+    _self=$(readlink -f "$0" 2>/dev/null) || _self="$0"
+    if [ ! -f "$_self" ]; then
+        warn "Can't work out where this script lives (\$0 = $0)."
+        warn "Run it by path, e.g.  sudo sh ~/bc250-setup.sh"
+        return 1
+    fi
+    say "Installed at: $_self"
+
+    _dir=$(dirname "$_self")
+    _new=$(mktemp)
+
+    # 1. A git checkout updates itself.
+    if git -C "$_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        say "This is a git checkout — pulling"
+        # Pull as whoever owns the checkout: git refuses to touch a tree owned
+        # by someone else, and pulling as root would leave root-owned objects.
+        _owner=$(stat -c %U "$_dir" 2>/dev/null) || _owner=root
+        if runuser -u "$_owner" -- git -C "$_dir" pull --ff-only; then
+            say "Checkout updated."
+            rm -f "$_new"
+            _offer_restart "$_self"
+            return 0
+        fi
+        warn "git pull failed — falling back to a direct download."
+    fi
+
+    # 2. gh can read the repo even while it is private.
+    _got=0
+    if command -v gh >/dev/null 2>&1; then
+        _owner=$(stat -c %U "$_self" 2>/dev/null) || _owner="$REAL_USER"
+        say "Trying gh (works while the repo is private)"
+        if runuser -u "$_owner" -- gh api \
+               "repos/$SELF_OWNER/$SELF_REPO/contents/$SELF_FILE?ref=$SELF_BRANCH" \
+               --jq .content 2>/dev/null | base64 -d > "$_new" 2>/dev/null \
+           && [ -s "$_new" ]; then
+            _got=1
+        else
+            warn "gh could not fetch it (not signed in? try: gh auth login)"
+        fi
+    fi
+
+    # 3. Plain download — only works once the repo is public.
+    if [ "$_got" -eq 0 ]; then
+        say "Trying a direct download"
+        if curl -fsSL \
+             "https://raw.githubusercontent.com/$SELF_OWNER/$SELF_REPO/$SELF_BRANCH/$SELF_FILE" \
+             -o "$_new" 2>/dev/null && [ -s "$_new" ]; then
+            _got=1
+        fi
+    fi
+
+    if [ "$_got" -eq 0 ]; then
+        rm -f "$_new"
+        warn "Could not download the script."
+        warn "The repo is private, so a plain download needs it to be public,"
+        warn "or gh signed in on this box:  sudo pacman -S github-cli && gh auth login"
+        return 1
+    fi
+
+    # Validate before letting it anywhere near the real path: a login page or a
+    # truncated transfer would otherwise overwrite a working installer.
+    if ! sh -n "$_new" 2>/dev/null; then
+        rm -f "$_new"
+        warn "The downloaded file is not valid shell — keeping the current one."
+        return 1
+    fi
+    if ! grep -q 'BC-250 setup' "$_new"; then
+        rm -f "$_new"
+        warn "The downloaded file doesn't look like this installer — keeping the current one."
+        return 1
+    fi
+
+    if cmp -s "$_new" "$_self"; then
+        rm -f "$_new"
+        say "Already the latest version."
+        return 0
+    fi
+
+    cp -p "$_self" "$_self.bak" 2>/dev/null || true
+    # mv is a rename, so the copy this shell is still reading stays intact.
+    if ! mv "$_new" "$_self"; then
+        rm -f "$_new"
+        warn "Could not write $_self — is it on a read-only filesystem?"
+        return 1
+    fi
+    chmod +x "$_self" 2>/dev/null || true
+    say "Updated. Previous version saved as $(basename "$_self").bak"
+    _offer_restart "$_self"
+}
+
+# The shell is still running the old copy, so offer to hand over to the new one.
+_offer_restart() {
+    if confirm "Restart the script on the new version now?"; then
+        exec sh "$1"
+    fi
+    say "Run it again when you're ready — this session is still the old version."
+}
+
 # ================================================================== MENUS ===
 
 install_all() {
@@ -1066,6 +1180,7 @@ main_menu() {
 
   a) Install all
   t) Test HDMI-CEC
+  u) Update this script
   r) Revert / remove
   q) Quit
 MENU
@@ -1082,6 +1197,7 @@ MENU
             8) ctlcenter_install || true; pause ;;
             a|A) install_all; pause ;;
             t|T) cec_test || true; pause ;;
+            u|U) self_update || true; pause ;;
             r|R) revert_menu ;;
             q|Q) exit 0 ;;
             *) warn "no such option" ;;
