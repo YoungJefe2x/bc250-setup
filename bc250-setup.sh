@@ -1396,8 +1396,20 @@ self_update() {
     # 3. Plain download — only works once the repo is public.
     if [ "$_got" -eq 0 ]; then
         say "Trying a direct download"
+        # raw.githubusercontent.com caches a branch URL for up to 5 minutes, so
+        # right after a merge it can hand back the old copy and this reports
+        # "already the latest". Ask the API for the newest commit and download
+        # that exact commit's file, which is never stale. The branch URL is
+        # only the fallback if the API can't be reached.
+        _sha=$(curl -fsSL -H 'Accept: application/vnd.github.sha' \
+                 "https://api.github.com/repos/$SELF_OWNER/$SELF_REPO/commits/$SELF_BRANCH" \
+                 2>/dev/null) || _sha=""
+        case "$_sha" in
+            *[!0-9a-f]*|"") _ref="$SELF_BRANCH" ;;
+            *) _ref="$_sha" ;;
+        esac
         if curl -fsSL \
-             "https://raw.githubusercontent.com/$SELF_OWNER/$SELF_REPO/$SELF_BRANCH/$SELF_FILE" \
+             "https://raw.githubusercontent.com/$SELF_OWNER/$SELF_REPO/$_ref/$SELF_FILE" \
              -o "$_new" 2>/dev/null && [ -s "$_new" ]; then
             _got=1
         fi
