@@ -493,6 +493,18 @@ print(f">> strip.leds set to {count}")
 PY
 }
 
+# The receiver's serial port. make install adds a udev rule that names it
+# /dev/led-controller; nudge udev so that link exists without a replug, then
+# fall back to the first ttyACM/ttyUSB the way upstream's Makefile does.
+led_find_port() {
+    udevadm trigger --subsystem-match=tty --action=add 2>/dev/null || true
+    udevadm settle --timeout=5 2>/dev/null || true
+    for _p in /dev/led-controller /dev/ttyACM* /dev/ttyUSB*; do
+        [ -e "$_p" ] && { echo "$_p"; return 0; }
+    done
+    return 0
+}
+
 led_install() {
     say "WS2812B LED strip daemon"
 
@@ -519,11 +531,15 @@ led_install() {
                 warn "Try:  sudo pip install --break-system-packages esptool"
                 warn "Then: cd $LED_SRC && sudo make flash"
             else
-                printf 'Serial port [/dev/ttyACM0]: '
-                read -r port
-                [ -n "$port" ] || port=/dev/ttyACM0
-                ( cd "$LED_SRC" && make flash PORT="$port" TARGET=esp32c3 ) \
-                    || warn "flash failed; you can retry with: cd $LED_SRC && sudo make flash"
+                port=$(led_find_port)
+                if [ -z "$port" ]; then
+                    warn "No ESP32 serial port found. Plug the receiver in by USB, then:"
+                    warn "  cd $LED_SRC && sudo make flash"
+                else
+                    say "Flashing the receiver on $port"
+                    ( cd "$LED_SRC" && make flash PORT="$port" TARGET=esp32c3 ) \
+                        || warn "flash failed; you can retry with: cd $LED_SRC && sudo make flash"
+                fi
             fi
             ;;
     esac

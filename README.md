@@ -77,6 +77,10 @@ which downloads the prebuilt ESP32 image from the repo's releases and writes
 it with esptool — no ESP-IDF toolchain needed, but it does need internet at
 flash time, and it rewrites the power/fan/BLE config partitions.
 
+The receiver's serial port is found automatically: `/dev/led-controller`
+(the udev link `make install` adds), else the first `/dev/ttyACM*` or
+`/dev/ttyUSB*`. If none is plugged in, flashing is skipped with a warning.
+
 `make install` never overwrites an existing `/etc/led-controller/config.json`.
 The installer then sets `strip.leds` to 26, the length of the BC-250 front
 strip, on a fresh or existing config. `strip.pin` and `serial.port` keep their
