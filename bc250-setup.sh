@@ -471,6 +471,28 @@ cec_revert() {
 
 # =================================================================== LED ====
 
+# Every BC-250 front strip here is the same 26-LED WS2812B, so set the count
+# rather than leave upstream's default (33) for someone to fix by hand.
+LED_COUNT=26
+LED_CONFIG=/etc/led-controller/config.json
+
+led_set_count() {
+    [ -f "$LED_CONFIG" ] || { warn "$LED_CONFIG missing; set strip.leds to $LED_COUNT by hand"; return 0; }
+    python3 - "$LED_CONFIG" "$LED_COUNT" << 'PY' || warn "could not set strip.leds; set it to $LED_COUNT by hand"
+import json, sys
+path, count = sys.argv[1], int(sys.argv[2])
+with open(path) as f:
+    cfg = json.load(f)
+if cfg.get("strip", {}).get("leds") == count:
+    sys.exit(0)
+cfg.setdefault("strip", {})["leds"] = count
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=4)
+    f.write("\n")
+print(f">> strip.leds set to {count}")
+PY
+}
+
 led_install() {
     say "WS2812B LED strip daemon"
 
@@ -486,6 +508,7 @@ led_install() {
 
     ( cd "$LED_SRC" && make install )
     # make install never overwrites an existing /etc/led-controller/config.json
+    led_set_count
 
     printf '\nFlash the ESP32 receiver now? (needs esptool; skip if already flashed) '
     read -r ans
@@ -505,10 +528,13 @@ led_install() {
             ;;
     esac
 
-    systemctl enable --now led-controller || warn "check: systemctl status led-controller"
+    # Restart rather than --now, so a re-run applies the LED count to a daemon
+    # that is already running.
+    { systemctl enable led-controller && systemctl restart led-controller; } \
+        || warn "check: systemctl status led-controller"
     mark led
-    say "Done. Edit /etc/led-controller/config.json (strip.leds, strip.pin,"
-    say "sinks.serial.port), then: sudo systemctl restart led-controller"
+    say "Done. strip.leds is set to $LED_COUNT. If the pin or serial port differ,"
+    say "edit $LED_CONFIG (strip.pin, serial.port), then: sudo systemctl restart led-controller"
 }
 
 led_revert() {

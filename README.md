@@ -77,9 +77,11 @@ which downloads the prebuilt ESP32 image from the repo's releases and writes
 it with esptool — no ESP-IDF toolchain needed, but it does need internet at
 flash time, and it rewrites the power/fan/BLE config partitions.
 
-`make install` never overwrites an existing `/etc/led-controller/config.json`,
-so a fresh install needs `strip.leds`, `strip.pin` and the serial port set by
-hand, then `systemctl restart led-controller`.
+`make install` never overwrites an existing `/etc/led-controller/config.json`.
+The installer then sets `strip.leds` to 26, the length of the BC-250 front
+strip, on a fresh or existing config. `strip.pin` and `serial.port` keep their
+defaults (4 and `/dev/led-controller`); change them by hand only if your
+wiring differs, then `systemctl restart led-controller`.
 
 ### 3. Power button / suspend
 
