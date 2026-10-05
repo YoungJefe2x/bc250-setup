@@ -92,7 +92,9 @@ wiring differs, then `systemctl restart led-controller`.
 Masks `sleep.target`, `suspend.target`, `hibernate.target` and
 `hybrid-sleep.target` — these boards hang on resume, so nothing should be
 able to suspend them, including a CEC standby arriving over the bus. Adds a
-logind drop-in setting `HandlePowerKey=poweroff`.
+logind drop-in setting `HandlePowerKey=poweroff`, which takes effect at the next
+boot. It deliberately does not restart `systemd-logind`: that would drop the
+running game-mode session and leave the screen black.
 
 ### 4. Guide button → input
 
