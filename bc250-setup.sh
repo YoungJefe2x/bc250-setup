@@ -751,6 +751,112 @@ ctrl_cleanup() {
     return 0
 }
 
+# ================================================================ ANDROID ===
+
+WAYDROID_IMG_DIR=/etc/waydroid-extra/images
+ATV_OTA_SYS=https://waydroid-atv.github.io/ota/a16-tv/system
+ATV_OTA_VEN=https://waydroid-atv.github.io/ota/a16-tv/vendor
+
+atv_install() {
+    say "Android TV (Waydroid) for game mode"
+
+    pacman -S --needed --noconfirm waydroid cage wlr-randr unzip
+
+    # Prefer local WayDroid-ATV image zips; fall back to the OTA channel.
+    printf 'Folder with the WayDroid-ATV system/vendor zips [%s/Downloads]: ' "$REAL_HOME"
+    read -r zipdir
+    [ -n "$zipdir" ] || zipdir="$REAL_HOME/Downloads"
+    sys=$(ls -t "$zipdir"/*waydroid_tv*system*.zip 2>/dev/null | head -1)
+    ven=$(ls -t "$zipdir"/*waydroid_tv*vendor*.zip 2>/dev/null | head -1)
+
+    if [ -n "$sys" ] && [ -n "$ven" ]; then
+        say "Using local images: $(basename "$sys") + $(basename "$ven")"
+        mkdir -p "$WAYDROID_IMG_DIR"
+        unzip -o -q "$sys" -d "$WAYDROID_IMG_DIR"
+        unzip -o -q "$ven" -d "$WAYDROID_IMG_DIR"
+        waydroid init -f || { warn "waydroid init failed"; return 1; }
+    else
+        say "No local image zips found — initialising from the WayDroid-ATV OTA channel"
+        waydroid init -f -c "$ATV_OTA_SYS" -v "$ATV_OTA_VEN" -r lineage -s GAPPS \
+            || { warn "waydroid init failed"; return 1; }
+    fi
+
+    systemctl enable --now waydroid-container || \
+        warn "check: systemctl status waydroid-container"
+
+    # Let Android see the controller directly.
+    if runuser -u "$REAL_USER" -- waydroid prop set persist.waydroid.uevent true 2>/dev/null && \
+       runuser -u "$REAL_USER" -- waydroid prop set persist.waydroid.udev true 2>/dev/null; then
+        say "Controller passthrough enabled"
+    else
+        warn "Couldn't set the controller props yet (they need a running session)."
+        warn "After the first launch, run once:"
+        warn "  waydroid prop set persist.waydroid.uevent true"
+        warn "  waydroid prop set persist.waydroid.udev true"
+        warn "  waydroid session stop"
+    fi
+
+    # Passwordless rule for exactly one command: re-adding an input device so
+    # Android notices Steam's virtual pad. Validated before it goes live,
+    # because a broken sudoers file can lock you out of sudo.
+    tmp=$(mktemp)
+    echo "$REAL_USER ALL=(root) NOPASSWD: /usr/bin/tee /sys/class/input/event*/uevent" > "$tmp"
+    if visudo -cf "$tmp" >/dev/null 2>&1; then
+        install -m 440 -o root -g root "$tmp" /etc/sudoers.d/waydroid-udev
+        say "sudoers rule installed"
+    else
+        warn "sudoers rule failed validation — not installed; controller won't auto-attach"
+    fi
+    rm -f "$tmp"
+
+    cat > "$REAL_HOME/waydroid-tv.sh" << 'LAUNCH'
+#!/bin/bash
+# Android TV (Waydroid) launcher for game mode
+cage -- bash -c '
+  OUT=$(wlr-randr | head -1 | cut -d" " -f1)
+  wlr-randr --output "$OUT" --custom-mode 1920x1080 2>/dev/null
+  waydroid show-full-ui 2>&1 | while read -r line; do
+    case "$line" in
+      *"is ready"*)
+        sleep 2
+        for d in /sys/class/input/event*; do
+          n=$(cat "$d/device/name" 2>/dev/null)
+          case "$n" in "Microsoft X-Box 360 pad"*) sudo -n tee "$d/uevent" <<< add ;; esac
+        done
+        ;;
+    esac
+  done
+'
+waydroid session stop
+LAUNCH
+    chmod +x "$REAL_HOME/waydroid-tv.sh"
+    chown "$REAL_USER" "$REAL_HOME/waydroid-tv.sh"
+
+    mark atv
+    say "Done. Last manual step, in desktop mode:"
+    say "Steam -> Games -> Add a Non-Steam Game -> $REAL_HOME/waydroid-tv.sh"
+    say "Rename it \"Android TV\". Steam Input MUST be on for that shortcut —"
+    say "the virtual pad Android uses only exists while Steam Input is enabled."
+}
+
+atv_revert() {
+    say "Removing Android TV (Waydroid)"
+    runuser -u "$REAL_USER" -- waydroid session stop 2>/dev/null || true
+    systemctl disable --now waydroid-container 2>/dev/null || true
+    rm -f /etc/sudoers.d/waydroid-udev "$REAL_HOME/waydroid-tv.sh"
+
+    if confirm "Delete Android data and images too? (apps, logins, everything)"; then
+        rm -rf /var/lib/waydroid "$REAL_HOME/.local/share/waydroid" "$WAYDROID_IMG_DIR"
+        rmdir /etc/waydroid-extra 2>/dev/null || true
+        rm -f "$REAL_HOME"/.local/share/applications/waydroid.*.desktop
+    fi
+    if confirm "Uninstall the waydroid, cage and wlr-randr packages?"; then
+        pacman -Rns --noconfirm waydroid cage wlr-randr || warn "package removal failed"
+    fi
+    unmark atv
+    say "Removed. Delete the Android TV shortcut from Steam by hand."
+}
+
 # ========================================================= CONTROL CENTER ===
 
 # movacx/bc250-control-center — system monitoring, GPU/CPU tuning, CU and fan
