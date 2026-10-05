@@ -522,7 +522,7 @@ led_install() {
     # make install never overwrites an existing /etc/led-controller/config.json
     led_set_count
 
-    printf '\nFlash the ESP32 receiver now? (needs esptool; skip if already flashed) '
+    printf '\nFlash the ESP32 receiver now? (needs esptool; skip if already flashed) [y/N, Enter skips] '
     read -r ans
     case "$ans" in
         y|Y|yes|YES)
