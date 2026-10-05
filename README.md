@@ -143,8 +143,9 @@ a token, so every install needs its own application.
 
 ### 6. Android TV (Waydroid)
 
-Installs `waydroid`, `cage` and `wlr-randr`, initialises a WayDroid-ATV
-image (local zips if present in Downloads, otherwise the OTA channel),
+Installs `waydroid`, `cage` and `wlr-randr`, downloads and initialises the
+WayDroid-ATV images from its OTA channel (falling back to
+`*waydroid_tv*system*.zip`/`*vendor*.zip` in Downloads only if that fails),
 enables the container, sets controller passthrough props, and writes
 `~/waydroid-tv.sh`.
 

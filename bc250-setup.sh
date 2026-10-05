@@ -804,23 +804,24 @@ atv_install() {
 
     pacman -S --needed --noconfirm waydroid cage wlr-randr unzip
 
-    # Prefer local WayDroid-ATV image zips; fall back to the OTA channel.
-    printf 'Folder with the WayDroid-ATV system/vendor zips [%s/Downloads]: ' "$REAL_HOME"
-    read -r zipdir
-    [ -n "$zipdir" ] || zipdir="$REAL_HOME/Downloads"
-    sys=$(ls -t "$zipdir"/*waydroid_tv*system*.zip 2>/dev/null | head -1)
-    ven=$(ls -t "$zipdir"/*waydroid_tv*vendor*.zip 2>/dev/null | head -1)
-
-    if [ -n "$sys" ] && [ -n "$ven" ]; then
-        say "Using local images: $(basename "$sys") + $(basename "$ven")"
+    # Download the WayDroid-ATV system and vendor images from its OTA channel;
+    # waydroid init fetches and verifies them itself. Zips already sitting in
+    # ~/Downloads are only a fallback for when the download fails.
+    say "Downloading the WayDroid-ATV images (large; this takes a while)"
+    if ! waydroid init -f -c "$ATV_OTA_SYS" -v "$ATV_OTA_VEN" -r lineage -s GAPPS; then
+        zipdir="$REAL_HOME/Downloads"
+        sys=$(ls -t "$zipdir"/*waydroid_tv*system*.zip 2>/dev/null | head -1)
+        ven=$(ls -t "$zipdir"/*waydroid_tv*vendor*.zip 2>/dev/null | head -1)
+        if [ -z "$sys" ] || [ -z "$ven" ]; then
+            warn "Download failed. Check the network and run this option again."
+            return 1
+        fi
+        warn "Download failed; using local images instead:"
+        warn "  $(basename "$sys") + $(basename "$ven")"
         mkdir -p "$WAYDROID_IMG_DIR"
         unzip -o -q "$sys" -d "$WAYDROID_IMG_DIR"
         unzip -o -q "$ven" -d "$WAYDROID_IMG_DIR"
         waydroid init -f || { warn "waydroid init failed"; return 1; }
-    else
-        say "No local image zips found — initialising from the WayDroid-ATV OTA channel"
-        waydroid init -f -c "$ATV_OTA_SYS" -v "$ATV_OTA_VEN" -r lineage -s GAPPS \
-            || { warn "waydroid init failed"; return 1; }
     fi
 
     systemctl enable --now waydroid-container || \
