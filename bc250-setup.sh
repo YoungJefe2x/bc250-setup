@@ -589,18 +589,20 @@ HandleLidSwitch=ignore
 IdleAction=ignore
 CONF
 
-    systemctl restart systemd-logind || warn "logind restart failed; a reboot will apply it"
+    # Never restart systemd-logind here: it owns the running game-mode session,
+    # and restarting it drops that session and leaves the screen black.
+    # The new power-key setting takes effect at the next boot.
     mark power
-    say "Done. Power button now shuts down cleanly."
+    say "Done. Reboot once for the power button change to take effect."
 }
 
 power_revert() {
     say "Restoring default power behaviour"
     systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target
     rm -f /etc/systemd/logind.conf.d/99-bc250.conf
-    systemctl restart systemd-logind || true
+    # No logind restart (it kills the session); applies at the next boot.
     unmark power
-    say "Restored. Suspend is possible again — remember it hangs this board."
+    say "Restored. Reboot to apply. Suspend is possible again — remember it hangs this board."
 }
 
 # ================================================================= GUIDE ====
