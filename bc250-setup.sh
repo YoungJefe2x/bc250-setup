@@ -6,7 +6,7 @@
 # Components:
 #   cec     HDMI-CEC TV control (TV on/off with the board)
 #   led     WS2812B LED strip daemon + ESP32 firmware flash
-#   power   power button = shutdown, suspend disabled
+#   power   disable sleep/suspend; power button = shutdown
 #   guide   controller guide button switches the TV to this input
 #   decky   Decky plugins installed from local zip files
 #   atv     Android TV (Waydroid) launchable from game mode
@@ -574,7 +574,7 @@ led_revert() {
 # ================================================================= POWER ====
 
 power_install() {
-    say "Power button = shutdown, suspend disabled"
+    say "Disable sleep / suspend (power button = shutdown)"
     say "These boards hang on resume, so suspend is masked entirely."
 
     systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
@@ -1267,7 +1267,7 @@ show_status() {
 
     # ---- 3. Power
     echo
-    printf '  3. Power button / suspend         [%s]\n' "$(status power)"
+    printf '  3. Disable sleep / suspend        [%s]\n' "$(status power)"
     _masked=0
     for _t in sleep.target suspend.target hibernate.target hybrid-sleep.target; do
         [ "$(systemctl is-enabled "$_t" 2>/dev/null)" = masked ] && _masked=$((_masked + 1))
@@ -1501,13 +1501,13 @@ revert_menu() {
         cat << MENU
 
   ---- Revert ----
-  1) HDMI-CEC TV control    [$(status cec)]
-  2) LED strip daemon       [$(status led)]
-  3) Power button / suspend [$(status power)]
-  4) Guide button -> input  [$(status guide)]
-  5) Decky plugins          [$(status decky)]
-  6) Android TV (Waydroid)  [$(status atv)]
-  7) BC-250 Control Center  [$(status ctlcenter)]
+  1) HDMI-CEC TV control     [$(status cec)]
+  2) LED strip daemon        [$(status led)]
+  3) Disable sleep / suspend [$(status power)]
+  4) Guide button -> input   [$(status guide)]
+  5) Decky plugins           [$(status decky)]
+  6) Android TV (Waydroid)   [$(status atv)]
+  7) BC-250 Control Center   [$(status ctlcenter)]
   8) Revert everything
   b) Back
 MENU
@@ -1555,13 +1555,13 @@ main_menu() {
         cat << MENU
 
   ======== BC-250 setup ========
-  1) HDMI-CEC TV control    [$(status cec)]
-  2) LED strip daemon       [$(status led)]
-  3) Power button / suspend [$(status power)]
-  4) Guide button -> input  [$(status guide)]
-  5) Decky plugins          [$(status decky)]
-  6) Android TV (Waydroid)  [$(status atv)]
-  7) BC-250 Control Center  [$(status ctlcenter)]
+  1) HDMI-CEC TV control     [$(status cec)]
+  2) LED strip daemon        [$(status led)]
+  3) Disable sleep / suspend [$(status power)]
+  4) Guide button -> input   [$(status guide)]
+  5) Decky plugins           [$(status decky)]
+  6) Android TV (Waydroid)   [$(status atv)]
+  7) BC-250 Control Center   [$(status ctlcenter)]
 
   a) Install all
   s) Status — what is actually installed
