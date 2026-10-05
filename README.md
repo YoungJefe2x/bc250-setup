@@ -10,13 +10,13 @@ sudo sh bc250-setup.sh
 
 ```
   ======== BC-250 setup ========
-  1) HDMI-CEC TV control    [not installed]
-  2) LED strip daemon       [not installed]
-  3) Power button / suspend [not installed]
-  4) Guide button -> input  [not installed]
-  5) Decky plugins          [not installed]
-  6) Android TV (Waydroid)  [not installed]
-  7) BC-250 Control Center  [not installed]
+  1) HDMI-CEC TV control     [not installed]
+  2) LED strip daemon        [not installed]
+  3) Disable sleep / suspend [not installed]
+  4) Guide button -> input   [not installed]
+  5) Decky plugins           [not installed]
+  6) Android TV (Waydroid)   [not installed]
+  7) BC-250 Control Center   [not installed]
 
   a) Install all
   s) Status — what is actually installed
@@ -87,7 +87,7 @@ strip, on a fresh or existing config. `strip.pin` and `serial.port` keep their
 defaults (4 and `/dev/led-controller`); change them by hand only if your
 wiring differs, then `systemctl restart led-controller`.
 
-### 3. Power button / suspend
+### 3. Disable sleep / suspend
 
 Masks `sleep.target`, `suspend.target`, `hibernate.target` and
 `hybrid-sleep.target` — these boards hang on resume, so nothing should be
