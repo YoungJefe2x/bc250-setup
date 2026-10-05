@@ -824,6 +824,20 @@ atv_install() {
         waydroid init -f || { warn "waydroid init failed"; return 1; }
     fi
 
+    # WayDroid-ATV's setup wizard stops on a Bluetooth remote pairing screen
+    # that a controller can't get past. This prop skips it.
+    _prop=/var/lib/waydroid/waydroid_base.prop
+    if [ -f "$_prop" ]; then
+        if grep -q '^atv.setup.bt_remote_pairing=' "$_prop"; then
+            sed -i 's/^atv\.setup\.bt_remote_pairing=.*/atv.setup.bt_remote_pairing=false/' "$_prop"
+        else
+            echo "atv.setup.bt_remote_pairing=false" >> "$_prop"
+        fi
+        say "Skipping the Bluetooth remote pairing screen"
+    else
+        warn "$_prop not found; the BT remote pairing screen won't be skipped"
+    fi
+
     systemctl enable --now waydroid-container || \
         warn "check: systemctl status waydroid-container"
 
