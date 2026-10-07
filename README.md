@@ -111,7 +111,7 @@ for `BTN_MODE`.
 
 ### 5. Decky plugins
 
-Three plugins are embedded in the script as base64 — no separate files
+Four plugins are embedded in the script as base64 — no separate files
 needed:
 
 | Plugin | What it does |
@@ -119,6 +119,7 @@ needed:
 | BC-250 Lighting | WS2812B strip and Nollie fan zones |
 | System Updates | CachyOS updates and notifications from game mode |
 | Discord Deck | Voice channels, audio device switching, speaking indicators |
+| CEC Remote | TV/soundbar volume and mute, TV power, switch the TV to this box |
 
 Installs Decky Loader first if it's missing, using the official installer.
 The copies under `plugins/` are the same zips, kept as a backup and for
