@@ -806,6 +806,132 @@ WAYDROID_IMG_DIR=/etc/waydroid-extra/images
 ATV_OTA_SYS=https://waydroid-atv.github.io/ota/a16-tv/system
 ATV_OTA_VEN=https://waydroid-atv.github.io/ota/a16-tv/vendor
 
+# The pieces this script writes for Android TV: the sudoers rules, the
+# Start + Select = Home helper and the launcher. Kept apart from atv_install so
+# an update can re-apply them without re-initialising Waydroid.
+atv_write_files() {
+    # Passwordless rules for exactly two commands: re-adding an input device
+    # so Android notices Steam's virtual pad, and pressing Android's Home key
+    # (the Start + Select combo below). Validated before it goes live,
+    # because a broken sudoers file can lock you out of sudo.
+    tmp=$(mktemp)
+    {
+        echo "$REAL_USER ALL=(root) NOPASSWD: /usr/bin/tee /sys/class/input/event*/uevent"
+        echo "$REAL_USER ALL=(root) NOPASSWD: /usr/bin/waydroid shell input keyevent 3"
+    } > "$tmp"
+    if visudo -cf "$tmp" >/dev/null 2>&1; then
+        install -m 440 -o root -g root "$tmp" /etc/sudoers.d/waydroid-udev
+        say "sudoers rule installed"
+    else
+        warn "sudoers rule failed validation — not installed; controller won't auto-attach"
+    fi
+    rm -f "$tmp"
+
+    # Steam keeps the Xbox button for its own menu, so Android never sees a
+    # Home press. Start + Select together stands in for it.
+    cat > /usr/local/bin/atv-home-combo << 'COMBO'
+#!/usr/bin/env python3
+"""Start + Select on the controller -> Android Home, while Android TV runs.
+
+Reads Steam's virtual pad (the "Microsoft X-Box 360 pad" Android also sees)
+and, when both buttons are down together, has Waydroid press Home. Fires once
+per press; let go of either button to arm it again.
+"""
+import glob, os, select, struct, subprocess, time
+
+EVENT = struct.Struct("llHHi")
+EV_KEY, BTN_SELECT, BTN_START = 0x01, 0x13A, 0x13B
+EVIOCGNAME = (2 << 30) | (256 << 16) | (ord("E") << 8) | 0x06
+
+
+def name(fd):
+    import fcntl
+    try:
+        return fcntl.ioctl(fd, EVIOCGNAME, bytes(256)).split(b"\0", 1)[0].decode()
+    except OSError:
+        return ""
+
+
+def home():
+    subprocess.run(["sudo", "-n", "/usr/bin/waydroid", "shell", "input", "keyevent", "3"],
+                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL, timeout=10)
+
+
+fds, held, fired, next_scan = {}, {}, set(), 0.0
+while True:
+    if time.monotonic() >= next_scan:
+        next_scan = time.monotonic() + 3
+        for path in glob.glob("/dev/input/event*"):
+            if path in fds.values():
+                continue
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            except OSError:
+                continue
+            if name(fd).startswith("Microsoft X-Box 360 pad"):
+                fds[fd] = path
+                held[fd] = set()
+            else:
+                os.close(fd)
+    if not fds:
+        time.sleep(1)
+        continue
+    ready, _, _ = select.select(list(fds), [], [], 1.0)
+    for fd in ready:
+        try:
+            data = os.read(fd, EVENT.size * 64)
+        except BlockingIOError:
+            continue
+        except OSError:
+            os.close(fd)
+            fds.pop(fd, None)
+            held.pop(fd, None)
+            fired.discard(fd)
+            continue
+        for off in range(0, len(data) - EVENT.size + 1, EVENT.size):
+            _s, _us, etype, code, value = EVENT.unpack_from(data, off)
+            if etype != EV_KEY or code not in (BTN_START, BTN_SELECT):
+                continue
+            if value:
+                held[fd].add(code)
+            else:
+                held[fd].discard(code)
+                fired.discard(fd)
+            if held[fd] == {BTN_START, BTN_SELECT} and fd not in fired:
+                fired.add(fd)
+                home()
+COMBO
+    chmod 755 /usr/local/bin/atv-home-combo
+
+    cat > "$REAL_HOME/waydroid-tv.sh" << 'LAUNCH'
+#!/bin/bash
+# Android TV (Waydroid) launcher for game mode
+# Start + Select = Home (Steam keeps the Xbox button for itself)
+/usr/local/bin/atv-home-combo &
+COMBO=$!
+cage -- bash -c '
+  OUT=$(wlr-randr | head -1 | cut -d" " -f1)
+  wlr-randr --output "$OUT" --custom-mode 1920x1080 2>/dev/null
+  waydroid show-full-ui 2>&1 | while read -r line; do
+    case "$line" in
+      *"is ready"*)
+        sleep 2
+        for d in /sys/class/input/event*; do
+          n=$(cat "$d/device/name" 2>/dev/null)
+          case "$n" in "Microsoft X-Box 360 pad"*) sudo -n tee "$d/uevent" <<< add ;; esac
+        done
+        ;;
+    esac
+  done
+'
+kill "$COMBO" 2>/dev/null
+waydroid session stop
+LAUNCH
+    chmod +x "$REAL_HOME/waydroid-tv.sh"
+    chown "$REAL_USER" "$REAL_HOME/waydroid-tv.sh"
+}
+
 atv_install() {
     say "Android TV (Waydroid) for game mode"
 
@@ -860,54 +986,21 @@ atv_install() {
         warn "  waydroid session stop"
     fi
 
-    # Passwordless rule for exactly one command: re-adding an input device so
-    # Android notices Steam's virtual pad. Validated before it goes live,
-    # because a broken sudoers file can lock you out of sudo.
-    tmp=$(mktemp)
-    echo "$REAL_USER ALL=(root) NOPASSWD: /usr/bin/tee /sys/class/input/event*/uevent" > "$tmp"
-    if visudo -cf "$tmp" >/dev/null 2>&1; then
-        install -m 440 -o root -g root "$tmp" /etc/sudoers.d/waydroid-udev
-        say "sudoers rule installed"
-    else
-        warn "sudoers rule failed validation — not installed; controller won't auto-attach"
-    fi
-    rm -f "$tmp"
-
-    cat > "$REAL_HOME/waydroid-tv.sh" << 'LAUNCH'
-#!/bin/bash
-# Android TV (Waydroid) launcher for game mode
-cage -- bash -c '
-  OUT=$(wlr-randr | head -1 | cut -d" " -f1)
-  wlr-randr --output "$OUT" --custom-mode 1920x1080 2>/dev/null
-  waydroid show-full-ui 2>&1 | while read -r line; do
-    case "$line" in
-      *"is ready"*)
-        sleep 2
-        for d in /sys/class/input/event*; do
-          n=$(cat "$d/device/name" 2>/dev/null)
-          case "$n" in "Microsoft X-Box 360 pad"*) sudo -n tee "$d/uevent" <<< add ;; esac
-        done
-        ;;
-    esac
-  done
-'
-waydroid session stop
-LAUNCH
-    chmod +x "$REAL_HOME/waydroid-tv.sh"
-    chown "$REAL_USER" "$REAL_HOME/waydroid-tv.sh"
+    atv_write_files
 
     mark atv
     say "Done. Last manual step, in desktop mode:"
     say "Steam -> Games -> Add a Non-Steam Game -> $REAL_HOME/waydroid-tv.sh"
     say "Rename it \"Android TV\". Steam Input MUST be on for that shortcut —"
     say "the virtual pad Android uses only exists while Steam Input is enabled."
+    say "In Android TV, press Start + Select together for Home."
 }
 
 atv_revert() {
     say "Removing Android TV (Waydroid)"
     runuser -u "$REAL_USER" -- waydroid session stop 2>/dev/null || true
     systemctl disable --now waydroid-container 2>/dev/null || true
-    rm -f /etc/sudoers.d/waydroid-udev "$REAL_HOME/waydroid-tv.sh"
+    rm -f /etc/sudoers.d/waydroid-udev "$REAL_HOME/waydroid-tv.sh" /usr/local/bin/atv-home-combo
 
     if confirm "Delete Android data and images too? (apps, logins, everything)"; then
         rm -rf /var/lib/waydroid "$REAL_HOME/.local/share/waydroid" "$WAYDROID_IMG_DIR"
@@ -1476,10 +1569,12 @@ refresh_installed() {
     if is_done cec;   then cec_install   || warn "cec refresh failed";   _did=1; fi
     if is_done power; then power_install || warn "power refresh failed"; _did=1; fi
     if is_done guide; then guide_install || warn "guide refresh failed"; _did=1; fi
+    if is_done atv;   then atv_write_files || warn "android tv refresh failed"; _did=1; fi
     if [ "$_did" -eq 0 ]; then
         say "Nothing installed that this script writes directly."
     fi
-    # The others (LED, Decky, Android TV, Control Center) install external
+    # Android TV only has its launcher files re-written, not Waydroid itself.
+    # The others (LED, Decky, Control Center) install external
     # software rather than files this script owns, so an update never stales
     # them; re-run those options by hand if you want them rebuilt.
     rm -f "$REFRESH_FLAG"
