@@ -3,13 +3,13 @@
     {
       "dir": "bc250-lighting",
       "name": "BC-250 Lighting",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "zip": "plugins/bc250-lighting.zip"
     },
     {
       "dir": "System Updates",
       "name": "System Updates",
-      "version": "1.5.0",
+      "version": "1.5.1",
       "zip": "plugins/system-updates.zip"
     },
     {
@@ -23,7 +23,7 @@
       "dir": "cec-remote",
       "name": "CEC Remote",
       "packages": ["v4l-utils"],
-      "version": "0.1.0",
+      "version": "0.1.1",
       "zip": "plugins/cec-remote.zip"
     }
   ]
