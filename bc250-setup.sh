@@ -807,7 +807,7 @@ ATV_OTA_SYS=https://waydroid-atv.github.io/ota/a16-tv/system
 ATV_OTA_VEN=https://waydroid-atv.github.io/ota/a16-tv/vendor
 
 # The pieces this script writes for Android TV: the sudoers rule, the
-# hold-View-for-Home service and the launcher. Kept apart from atv_install so
+# hold-View/Menu-for-Home service and the launcher. Kept apart from atv_install so
 # an update can re-apply them without re-initialising Waydroid.
 atv_write_files() {
     # Passwordless rule for exactly one command: re-adding an input device so
@@ -828,12 +828,12 @@ atv_write_files() {
     rm -f /usr/local/bin/atv-home-combo
 
     # Steam keeps the Xbox button for its own menu, so Android never sees a
-    # Home press. Holding View stands in for it. Runs as root so it can read
+    # Home press. Holding View or Menu stands in for it. Runs as root so it can read
     # the pad and reach Waydroid without any sudo rule; it only acts while the
     # Android TV window (cage) is up.
     cat > /usr/local/bin/atv-home-button << 'HOMEBTN'
 #!/usr/bin/env python3
-"""Hold View (Select) on the controller -> Android Home, in Android TV only.
+"""Hold View or Menu on the controller -> Android Home, in Android TV only.
 
 Reads Steam's virtual pad, the "Microsoft X-Box 360 pad" Android also sees.
 A hold of HOLD seconds presses Home once; a short tap is left alone.
@@ -842,7 +842,8 @@ import fcntl, glob, os, select, struct, subprocess, time
 
 HOLD = 0.8
 EVENT = struct.Struct("llHHi")
-EV_KEY, BTN_SELECT = 0x01, 0x13A
+EV_KEY = 0x01
+BUTTONS = (0x13A, 0x13B)  # BTN_SELECT (View), BTN_START (Menu)
 EVIOCGNAME = (2 << 30) | (256 << 16) | (ord("E") << 8) | 0x06
 
 
@@ -865,7 +866,7 @@ def home():
 
 
 fds = {}            # fd -> path
-down = {}           # fd -> monotonic time View went down, None once fired
+down = {}           # (fd, button) -> time it went down, None once fired
 next_scan = 0.0
 while True:
     now = time.monotonic()
@@ -894,19 +895,20 @@ while True:
         except OSError:
             os.close(fd)
             fds.pop(fd, None)
-            down.pop(fd, None)
+            for key in [k for k in down if k[0] == fd]:
+                del down[key]
             continue
         for off in range(0, len(data) - EVENT.size + 1, EVENT.size):
             _s, _us, etype, code, value = EVENT.unpack_from(data, off)
-            if etype == EV_KEY and code == BTN_SELECT:
+            if etype == EV_KEY and code in BUTTONS:
                 if value == 1:
-                    down[fd] = time.monotonic()
+                    down[(fd, code)] = time.monotonic()
                 elif value == 0:
-                    down.pop(fd, None)
+                    down.pop((fd, code), None)
     now = time.monotonic()
-    for fd, since in list(down.items()):
+    for key, since in list(down.items()):
         if since is not None and now - since >= HOLD:
-            down[fd] = None
+            down[key] = None
             if android_up():
                 home()
 HOMEBTN
@@ -914,7 +916,7 @@ HOMEBTN
 
     cat > /etc/systemd/system/atv-home-button.service << 'UNIT'
 [Unit]
-Description=Android TV: hold View for Home
+Description=Android TV: hold View or Menu for Home
 After=waydroid-container.service
 
 [Service]
@@ -1016,7 +1018,7 @@ atv_install() {
     say "Steam -> Games -> Add a Non-Steam Game -> $REAL_HOME/waydroid-tv.sh"
     say "Rename it \"Android TV\". Steam Input MUST be on for that shortcut —"
     say "the virtual pad Android uses only exists while Steam Input is enabled."
-    say "In Android TV, hold View for Home."
+    say "In Android TV, hold View or Menu for Home."
 }
 
 atv_revert() {
