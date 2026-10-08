@@ -9,18 +9,20 @@
     {
       "dir": "System Updates",
       "name": "System Updates",
-      "version": "1.1.2",
+      "version": "1.2.0",
       "zip": "plugins/system-updates.zip"
     },
     {
       "dir": "discord-deck",
       "name": "Discord Deck",
+      "packages": ["python-gobject", "python-cairo", "gtk3", "xorg-xprop", "qrencode"],
       "version": "0.3.0",
       "zip": "plugins/discord-deck.zip"
     },
     {
       "dir": "cec-remote",
       "name": "CEC Remote",
+      "packages": ["v4l-utils"],
       "version": "0.1.0",
       "zip": "plugins/cec-remote.zip"
     }
