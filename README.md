@@ -172,10 +172,11 @@ while you're in the Steam UI. **Steam Input must be on for the shortcut** or
 that virtual pad won't exist and Android will see no controller at all.
 
 Steam keeps the Xbox button for its own menu, so Android never gets a Home
-press from it. While the launcher runs, **Start + Select together** sends
-Android's Home key instead (`/usr/local/bin/atv-home-combo`, reading the same
-virtual pad and pressing Home through `waydroid shell input keyevent 3`, the
-one extra command the sudoers rule allows).
+press from it. **Hold View (the left small button) for about a second** to go
+Home instead. A short tap still reaches Android as View. This is a small root
+service, `atv-home-button`, that reads the same virtual pad and presses Home
+with `waydroid shell input keyevent 3`, only while the Android TV window is up.
+It needs no sudo rule.
 
 Still manual: adding `~/waydroid-tv.sh` to Steam as a non-Steam game.
 
@@ -239,7 +240,7 @@ Updating the script does not touch the helper scripts and units an install
 already wrote to disk, so a newer version can sit there while the old files
 keep running. After an update the next start offers to re-apply the
 components that are marked installed. For Android TV that re-writes only the
-launcher, the Home combo helper and the sudoers rule, not Waydroid itself. The
+launcher, the hold-View service and the sudoers rule, not Waydroid itself. The
 LED daemon, Decky and Control Center install external software rather than
 files this script owns, so an update never stales those.
 
