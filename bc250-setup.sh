@@ -806,19 +806,15 @@ WAYDROID_IMG_DIR=/etc/waydroid-extra/images
 ATV_OTA_SYS=https://waydroid-atv.github.io/ota/a16-tv/system
 ATV_OTA_VEN=https://waydroid-atv.github.io/ota/a16-tv/vendor
 
-# The pieces this script writes for Android TV: the sudoers rules, the
-# Start + Select = Home helper and the launcher. Kept apart from atv_install so
+# The pieces this script writes for Android TV: the sudoers rule, the
+# hold-View-for-Home service and the launcher. Kept apart from atv_install so
 # an update can re-apply them without re-initialising Waydroid.
 atv_write_files() {
-    # Passwordless rules for exactly two commands: re-adding an input device
-    # so Android notices Steam's virtual pad, and pressing Android's Home key
-    # (the Start + Select combo below). Validated before it goes live,
+    # Passwordless rule for exactly one command: re-adding an input device so
+    # Android notices Steam's virtual pad. Validated before it goes live,
     # because a broken sudoers file can lock you out of sudo.
     tmp=$(mktemp)
-    {
-        echo "$REAL_USER ALL=(root) NOPASSWD: /usr/bin/tee /sys/class/input/event*/uevent"
-        echo "$REAL_USER ALL=(root) NOPASSWD: /usr/bin/waydroid shell input keyevent 3"
-    } > "$tmp"
+    echo "$REAL_USER ALL=(root) NOPASSWD: /usr/bin/tee /sys/class/input/event*/uevent" > "$tmp"
     if visudo -cf "$tmp" >/dev/null 2>&1; then
         install -m 440 -o root -g root "$tmp" /etc/sudoers.d/waydroid-udev
         say "sudoers rule installed"
@@ -827,41 +823,54 @@ atv_write_files() {
     fi
     rm -f "$tmp"
 
+    # The earlier Start + Select helper ran from the launcher through sudo.
+    # Its replacement below is a root service, so it needs neither.
+    rm -f /usr/local/bin/atv-home-combo
+
     # Steam keeps the Xbox button for its own menu, so Android never sees a
-    # Home press. Start + Select together stands in for it.
-    cat > /usr/local/bin/atv-home-combo << 'COMBO'
+    # Home press. Holding View stands in for it. Runs as root so it can read
+    # the pad and reach Waydroid without any sudo rule; it only acts while the
+    # Android TV window (cage) is up.
+    cat > /usr/local/bin/atv-home-button << 'HOMEBTN'
 #!/usr/bin/env python3
-"""Start + Select on the controller -> Android Home, while Android TV runs.
+"""Hold View (Select) on the controller -> Android Home, in Android TV only.
 
-Reads Steam's virtual pad (the "Microsoft X-Box 360 pad" Android also sees)
-and, when both buttons are down together, has Waydroid press Home. Fires once
-per press; let go of either button to arm it again.
+Reads Steam's virtual pad, the "Microsoft X-Box 360 pad" Android also sees.
+A hold of HOLD seconds presses Home once; a short tap is left alone.
 """
-import glob, os, select, struct, subprocess, time
+import fcntl, glob, os, select, struct, subprocess, time
 
+HOLD = 0.8
 EVENT = struct.Struct("llHHi")
-EV_KEY, BTN_SELECT, BTN_START = 0x01, 0x13A, 0x13B
+EV_KEY, BTN_SELECT = 0x01, 0x13A
 EVIOCGNAME = (2 << 30) | (256 << 16) | (ord("E") << 8) | 0x06
 
 
 def name(fd):
-    import fcntl
     try:
         return fcntl.ioctl(fd, EVIOCGNAME, bytes(256)).split(b"\0", 1)[0].decode()
     except OSError:
         return ""
 
 
+def android_up():
+    return subprocess.run(["pgrep", "-x", "cage"], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode == 0
+
+
 def home():
-    subprocess.run(["sudo", "-n", "/usr/bin/waydroid", "shell", "input", "keyevent", "3"],
+    subprocess.run(["/usr/bin/waydroid", "shell", "input", "keyevent", "3"],
                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL, timeout=10)
+                   stderr=subprocess.DEVNULL, timeout=15)
 
 
-fds, held, fired, next_scan = {}, {}, set(), 0.0
+fds = {}            # fd -> path
+down = {}           # fd -> monotonic time View went down, None once fired
+next_scan = 0.0
 while True:
-    if time.monotonic() >= next_scan:
-        next_scan = time.monotonic() + 3
+    now = time.monotonic()
+    if now >= next_scan:
+        next_scan = now + 3
         for path in glob.glob("/dev/input/event*"):
             if path in fds.values():
                 continue
@@ -871,13 +880,12 @@ while True:
                 continue
             if name(fd).startswith("Microsoft X-Box 360 pad"):
                 fds[fd] = path
-                held[fd] = set()
             else:
                 os.close(fd)
     if not fds:
-        time.sleep(1)
+        time.sleep(2)
         continue
-    ready, _, _ = select.select(list(fds), [], [], 1.0)
+    ready, _, _ = select.select(list(fds), [], [], 0.1)
     for fd in ready:
         try:
             data = os.read(fd, EVENT.size * 64)
@@ -886,30 +894,45 @@ while True:
         except OSError:
             os.close(fd)
             fds.pop(fd, None)
-            held.pop(fd, None)
-            fired.discard(fd)
+            down.pop(fd, None)
             continue
         for off in range(0, len(data) - EVENT.size + 1, EVENT.size):
             _s, _us, etype, code, value = EVENT.unpack_from(data, off)
-            if etype != EV_KEY or code not in (BTN_START, BTN_SELECT):
-                continue
-            if value:
-                held[fd].add(code)
-            else:
-                held[fd].discard(code)
-                fired.discard(fd)
-            if held[fd] == {BTN_START, BTN_SELECT} and fd not in fired:
-                fired.add(fd)
+            if etype == EV_KEY and code == BTN_SELECT:
+                if value == 1:
+                    down[fd] = time.monotonic()
+                elif value == 0:
+                    down.pop(fd, None)
+    now = time.monotonic()
+    for fd, since in list(down.items()):
+        if since is not None and now - since >= HOLD:
+            down[fd] = None
+            if android_up():
                 home()
-COMBO
-    chmod 755 /usr/local/bin/atv-home-combo
+HOMEBTN
+    chmod 755 /usr/local/bin/atv-home-button
+
+    cat > /etc/systemd/system/atv-home-button.service << 'UNIT'
+[Unit]
+Description=Android TV: hold View for Home
+After=waydroid-container.service
+
+[Service]
+ExecStart=/usr/local/bin/atv-home-button
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    systemctl daemon-reload
+    systemctl enable atv-home-button.service >/dev/null 2>&1 || true
+    systemctl restart atv-home-button.service || \
+        warn "check: systemctl status atv-home-button"
 
     cat > "$REAL_HOME/waydroid-tv.sh" << 'LAUNCH'
 #!/bin/bash
 # Android TV (Waydroid) launcher for game mode
-# Start + Select = Home (Steam keeps the Xbox button for itself)
-/usr/local/bin/atv-home-combo &
-COMBO=$!
 cage -- bash -c '
   OUT=$(wlr-randr | head -1 | cut -d" " -f1)
   wlr-randr --output "$OUT" --custom-mode 1920x1080 2>/dev/null
@@ -925,11 +948,11 @@ cage -- bash -c '
     esac
   done
 '
-kill "$COMBO" 2>/dev/null
 waydroid session stop
 LAUNCH
     chmod +x "$REAL_HOME/waydroid-tv.sh"
     chown "$REAL_USER" "$REAL_HOME/waydroid-tv.sh"
+
 }
 
 atv_install() {
@@ -993,14 +1016,18 @@ atv_install() {
     say "Steam -> Games -> Add a Non-Steam Game -> $REAL_HOME/waydroid-tv.sh"
     say "Rename it \"Android TV\". Steam Input MUST be on for that shortcut —"
     say "the virtual pad Android uses only exists while Steam Input is enabled."
-    say "In Android TV, press Start + Select together for Home."
+    say "In Android TV, hold View for Home."
 }
 
 atv_revert() {
     say "Removing Android TV (Waydroid)"
     runuser -u "$REAL_USER" -- waydroid session stop 2>/dev/null || true
     systemctl disable --now waydroid-container 2>/dev/null || true
-    rm -f /etc/sudoers.d/waydroid-udev "$REAL_HOME/waydroid-tv.sh" /usr/local/bin/atv-home-combo
+    systemctl disable --now atv-home-button.service 2>/dev/null || true
+    rm -f /etc/systemd/system/atv-home-button.service
+    systemctl daemon-reload
+    rm -f /etc/sudoers.d/waydroid-udev "$REAL_HOME/waydroid-tv.sh" \
+          /usr/local/bin/atv-home-button /usr/local/bin/atv-home-combo
 
     if confirm "Delete Android data and images too? (apps, logins, everything)"; then
         rm -rf /var/lib/waydroid "$REAL_HOME/.local/share/waydroid" "$WAYDROID_IMG_DIR"
