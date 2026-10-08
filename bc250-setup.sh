@@ -1192,6 +1192,122 @@ github_plugin() {
     return $_rc
 }
 
+# Plugins from the official Decky store. Installed the way Decky's own store
+# does it (same zip, checked against the store's sha256), so Decky offers
+# their updates as usual afterwards. Each line is the store name.
+STORE_PLUGINS="ProtonDB Badges
+CSS Loader"
+STORE_URL="https://plugins.deckbrew.xyz/plugins"
+STORE_CDN="https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/versions"
+
+# Folder of the installed plugin whose plugin.json carries this name, the
+# way Decky matches store plugins. Empty when it is not installed.
+store_plugin_dir() {
+    for _f in "$DECKY_DIR"/*/plugin.json; do
+        [ -f "$_f" ] || continue
+        if grep -q "\"name\"[[:space:]]*:[[:space:]]*\"$1\"" "$_f"; then
+            dirname "$_f"
+            return 0
+        fi
+    done
+}
+
+# Offer one store plugin from the listing in $1, install it when wanted.
+store_plugin() {
+    _list="$1" _name="$2"
+    _info=$(python3 - "$_list" "$_name" << 'PY'
+import json, sys
+try:
+    plugins = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    sys.exit(1)
+for p in plugins:
+    if p.get("name") == sys.argv[2] and p.get("versions"):
+        v = p["versions"][0]
+        print(v["name"].lstrip("v"), v["hash"], v.get("artifact") or "", sep="\t")
+        break
+PY
+) || _info=""
+    if [ -z "$_info" ]; then
+        warn "$_name is not in the Decky store listing; skipping"
+        return 1
+    fi
+    _ver=$(printf '%s' "$_info" | cut -f1)
+    _hash=$(printf '%s' "$_info" | cut -f2)
+    _url=$(printf '%s' "$_info" | cut -f3)
+    [ -n "$_url" ] || _url="$STORE_CDN/$_hash.zip"
+
+    _old=$(store_plugin_dir "$_name")
+    _cur=""
+    if [ -n "$_old" ]; then
+        _cur=$(pkg_version < "$_old/package.json" 2>/dev/null) || _cur=""
+        [ -n "$_cur" ] || _cur=0
+    fi
+    if [ -z "$_old" ]; then
+        printf '  install %s (v%s) ? [y/N] ' "$_name" "$_ver"
+    elif version_newer "$_ver" "$_cur"; then
+        printf '  update %s (v%s -> v%s) ? [y/N] ' "$_name" "$_cur" "$_ver"
+    else
+        echo "  $_name is up to date (v$_cur)"
+        _current=$((_current + 1))
+        return 1
+    fi
+    read -r _ans
+    case "$_ans" in
+        y|Y|yes|YES) ;;
+        *) return 1 ;;
+    esac
+
+    _tmp=$(mktemp -d)
+    if ! curl -fsSL -o "$_tmp/plugin.zip" "$_url"; then
+        warn "download of $_name failed"
+        rm -rf "$_tmp"
+        return 1
+    fi
+    if [ "$(sha256sum "$_tmp/plugin.zip" | cut -d' ' -f1)" != "$_hash" ]; then
+        warn "$_name download does not match the store's checksum; not installed"
+        rm -rf "$_tmp"
+        return 1
+    fi
+    # Clear the old copy first in case it sits under another folder name.
+    if [ -n "$_old" ]; then
+        rm -rf "${_old:?}"
+    fi
+    _dir=$(unzip -Z1 "$_tmp/plugin.zip" 2>/dev/null | head -n 1 | cut -d/ -f1)
+    _rc=0
+    install_plugin_zip "$_tmp/plugin.zip" || _rc=1
+    rm -rf "$_tmp"
+    [ "$_rc" -eq 0 ] || return 1
+
+    # A few store plugins list extra binaries in package.json for Decky to
+    # fetch at install time. Do the same, hash-checked.
+    if [ -n "$_dir" ] && grep -q '"remote_binary"' "$DECKY_DIR/$_dir/package.json" 2>/dev/null; then
+        python3 - "$DECKY_DIR/$_dir" << 'PY' || warn "$_name: extra downloads failed; it may not work"
+import hashlib, json, os, sys, urllib.request
+base = sys.argv[1]
+pkg = json.load(open(os.path.join(base, "package.json")))
+os.makedirs(os.path.join(base, "bin"), exist_ok=True)
+for item in pkg.get("remote_binary", []):
+    data = urllib.request.urlopen(item["url"], timeout=120).read()
+    if hashlib.sha256(data).hexdigest() != item["sha256hash"]:
+        sys.exit(f"checksum mismatch for {item['name']}")
+    with open(os.path.join(base, "bin", item["name"]), "wb") as out:
+        out.write(data)
+PY
+    fi
+
+    # Ownership as Decky's store sets it: contents belong to you unless the
+    # plugin asks to run as root; the folder and plugin.json stay root's.
+    if [ -n "$_dir" ] && [ -d "$DECKY_DIR/$_dir" ]; then
+        if ! grep -q '"root"' "$DECKY_DIR/$_dir/plugin.json" 2>/dev/null; then
+            chown -R "$REAL_USER:$(id -gn "$REAL_USER")" "$DECKY_DIR/$_dir"
+        fi
+        chown root:root "$DECKY_DIR/$_dir" "$DECKY_DIR/$_dir/plugin.json"
+        chmod -R 755 "$DECKY_DIR/$_dir"
+    fi
+    return 0
+}
+
 # Discord Deck needs a Discord application's client ID and secret. Typing two
 # long strings into a text field with a controller is miserable, so offer to
 # write them straight into the plugin's settings file here instead.
@@ -1316,7 +1432,24 @@ decky_install() {
     done
     IFS=$_old_ifs
 
-    # 3. Anything else the user has on disk.
+    # 3. Plugins from the Decky store, from one fetch of its listing.
+    say "Plugins from the Decky store:"
+    _list=$(mktemp)
+    if curl -fsSL -o "$_list" "$STORE_URL" 2>/dev/null; then
+        _old_ifs=$IFS
+        IFS='
+'
+        for _s in $STORE_PLUGINS; do
+            IFS=$_old_ifs
+            store_plugin "$_list" "$_s" && _any=1
+        done
+        IFS=$_old_ifs
+    else
+        warn "could not reach the Decky store; skipping its plugins"
+    fi
+    rm -f "$_list"
+
+    # 4. Anything else the user has on disk.
     if confirm "Also install plugin zips from a folder?"; then
         printf 'Folder holding the .zip files [%s/Downloads]: ' "$REAL_HOME"
         read -r zipdir
