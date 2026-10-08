@@ -1122,6 +1122,76 @@ embedded_label() {
     esac
 }
 
+# Plugins that are not in the Decky store, fetched from their own GitHub
+# releases at install time rather than bundled, so you always get the
+# current one. Each line: owner/repo|plugin folder|label.
+GITHUB_PLUGINS="moi952/decky-quick-tab|decky-quick-tab|Quick Tab (pin plugins as their own Quick Access tabs)"
+
+# The "version" field of the package.json on stdin.
+pkg_version() {
+    sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1
+}
+
+# Version of an installed plugin folder, empty when it is not installed.
+installed_version() {
+    [ -f "$DECKY_DIR/$1/package.json" ] || return 0
+    pkg_version < "$DECKY_DIR/$1/package.json"
+}
+
+# True when version $1 is newer than version $2.
+version_newer() {
+    [ "$1" != "$2" ] &&
+        [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$1" ]
+}
+
+# Ask about one plugin only when it is missing or older than the one on
+# offer. True when the answer is yes. Up-to-date plugins bump _current.
+offer_plugin() {
+    _o_label="$1" _o_dir="$2" _o_new="$3"
+    _o_cur=$(installed_version "$_o_dir")
+    if [ -z "$_o_cur" ]; then
+        printf '  install %s (v%s) ? [y/N] ' "$_o_label" "${_o_new:-?}"
+    elif [ -n "$_o_new" ] && version_newer "$_o_new" "$_o_cur"; then
+        printf '  update %s (v%s -> v%s) ? [y/N] ' "$_o_label" "$_o_cur" "$_o_new"
+    else
+        echo "  $_o_label is up to date (v$_o_cur)"
+        _current=$((_current + 1))
+        return 1
+    fi
+    read -r _o_ans
+    case "$_o_ans" in
+        y|Y|yes|YES) return 0 ;;
+    esac
+    return 1
+}
+
+# Offer the newest release zip of one GitHub plugin and install it.
+github_plugin() {
+    _repo="$1" _dir="$2" _label="$3"
+    _json=$(curl -fsSL "https://api.github.com/repos/$_repo/releases/latest" 2>/dev/null) || _json=""
+    _url=$(printf '%s\n' "$_json" |
+        grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*\.zip"' |
+        head -n 1 | sed 's/.*"\(https[^"]*\)"$/\1/')
+    _tag=$(printf '%s\n' "$_json" |
+        sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1)
+    if [ -z "$_url" ]; then
+        warn "could not reach $_repo releases; skipping $_label"
+        return 1
+    fi
+    offer_plugin "$_label" "$_dir" "$_tag" || return 1
+    _tmp=$(mktemp -d)
+    say "downloading $(basename "$_url")"
+    if ! curl -fsSL -o "$_tmp/plugin.zip" "$_url" || ! unzip -tq "$_tmp/plugin.zip" >/dev/null 2>&1; then
+        warn "download of $_repo failed"
+        rm -rf "$_tmp"
+        return 1
+    fi
+    _rc=0
+    install_plugin_zip "$_tmp/plugin.zip" || _rc=1
+    rm -rf "$_tmp"
+    return $_rc
+}
+
 # Discord Deck needs a Discord application's client ID and secret. Typing two
 # long strings into a text field with a controller is miserable, so offer to
 # write them straight into the plugin's settings file here instead.
@@ -1208,33 +1278,45 @@ decky_install() {
     pacman -S --needed --noconfirm unzip
 
     _any=0
+    _current=0
 
-    # 1. The plugins bundled into this script.
+    # 1. The plugins bundled into this script. Each is unpacked first so its
+    # folder and version can be compared with what is already installed.
     say "Bundled plugins:"
     _stage=$(mktemp -d)
     for _p in $EMBEDDED_PLUGINS; do
-        printf '  install %s ? [y/N] ' "$(embedded_label "$_p")"
-        read -r _ans
-        case "$_ans" in
-            y|Y|yes|YES)
-                if embed_payload "$_p" "$_stage/$_p.zip"; then
-                    if install_plugin_zip "$_stage/$_p.zip"; then
-                        _any=1
-                        [ "$_p" = "discord-deck" ] && discord_credentials
-                        if [ "$_p" = "cec-remote" ]; then
-                            pacman -S --needed --noconfirm v4l-utils ||
-                                warn "could not install v4l-utils (cec-ctl); CEC Remote needs it"
-                        fi
-                    fi
-                else
-                    warn "could not unpack the bundled $_p"
-                fi
-                ;;
-        esac
+        if ! embed_payload "$_p" "$_stage/$_p.zip"; then
+            warn "could not unpack the bundled $_p"
+            continue
+        fi
+        _dir=$(unzip -Z1 "$_stage/$_p.zip" 2>/dev/null | head -n 1 | cut -d/ -f1)
+        _ver=$(unzip -p "$_stage/$_p.zip" "$_dir/package.json" 2>/dev/null | pkg_version)
+        offer_plugin "$(embedded_label "$_p")" "$_dir" "$_ver" || continue
+        if install_plugin_zip "$_stage/$_p.zip"; then
+            _any=1
+            [ "$_p" = "discord-deck" ] && discord_credentials
+            if [ "$_p" = "cec-remote" ]; then
+                pacman -S --needed --noconfirm v4l-utils ||
+                    warn "could not install v4l-utils (cec-ctl); CEC Remote needs it"
+            fi
+        fi
     done
     rm -rf "$_stage"
 
-    # 2. Anything else the user has on disk.
+    # 2. Plugins from GitHub releases.
+    say "Plugins from GitHub:"
+    _old_ifs=$IFS
+    IFS='
+'
+    for _line in $GITHUB_PLUGINS; do
+        IFS=$_old_ifs
+        _g_repo=${_line%%|*}
+        _g_rest=${_line#*|}
+        github_plugin "$_g_repo" "${_g_rest%%|*}" "${_g_rest#*|}" && _any=1
+    done
+    IFS=$_old_ifs
+
+    # 3. Anything else the user has on disk.
     if confirm "Also install plugin zips from a folder?"; then
         printf 'Folder holding the .zip files [%s/Downloads]: ' "$REAL_HOME"
         read -r zipdir
@@ -1257,6 +1339,11 @@ decky_install() {
     fi
 
     if [ "$_any" -eq 0 ]; then
+        if [ "$_current" -gt 0 ]; then
+            mark decky
+            say "Nothing new installed; the rest is up to date."
+            return 0
+        fi
         warn "Nothing installed."
         return 1
     fi
