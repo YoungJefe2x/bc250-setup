@@ -16,7 +16,7 @@
       "dir": "discord-deck",
       "name": "Discord Deck",
       "packages": ["python-gobject", "python-cairo", "gtk3", "xorg-xprop", "qrencode"],
-      "version": "0.8.3",
+      "version": "0.8.4",
       "zip": "plugins/discord-deck.zip"
     },
     {
