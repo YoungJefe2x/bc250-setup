@@ -121,6 +121,17 @@ needed:
 | Discord Deck | Voice channels, audio device switching, speaking indicators |
 | CEC Remote | TV/soundbar volume and mute, TV power, switch the TV to this box |
 
+One more plugin that isn't in the Decky store is downloaded from its own
+GitHub releases at install time, so you always get the newest one:
+
+| Plugin | What it does |
+|---|---|
+| [Quick Tab](https://github.com/moi952/decky-quick-tab) | Pins any Decky plugin as its own tab in the Quick Access Menu; updates itself from its Settings page |
+
+The menu checks what's already installed and only asks about a plugin that is
+missing (`install`) or older than the one on offer (`update v0.2.0 -> v0.2.1`).
+Up-to-date ones are listed and skipped.
+
 Installs Decky Loader first if it's missing, using the official installer.
 The copies under `plugins/` are the same zips, kept as a backup and for
 installing by hand.
