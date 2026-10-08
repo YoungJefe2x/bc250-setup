@@ -147,7 +147,9 @@ again") it reads `plugins/versions.json` from this repo, compares it with the
 installed copies, notifies when one is newer and shows an Update button that
 replaces them. Decky isn't restarted on its own: a "Restart Decky now" button
 appears instead, and both buttons stay disabled while a system update is
-running. When changing a plugin, bump `version` in its
+running. A system update also refuses to start when the box was booted from a
+Limine snapshot entry (changes would only live in a small RAM overlay) or when
+the system drive has less than 3 GB free. When changing a plugin, bump `version` in its
 `package.json` and the matching entry in `plugins/versions.json`, then rebuild
 the zip and re-embed it.
 
