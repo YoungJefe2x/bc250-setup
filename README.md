@@ -128,6 +128,11 @@ GitHub releases at install time, so you always get the newest one:
 |---|---|
 | [Quick Tab](https://github.com/moi952/decky-quick-tab) | Pins any Decky plugin as its own tab in the Quick Access Menu; updates itself from its Settings page |
 
+Two store plugins are offered too, so a fresh box gets everything in one go:
+**ProtonDB Badges** and **CSS Loader**. They're downloaded from the Decky
+store, checked against the store's sha256 and set up with the same ownership
+the store uses, so Decky shows their updates as usual afterwards.
+
 The menu checks what's already installed and only asks about a plugin that is
 missing (`install`) or older than the one on offer (`update v0.2.0 -> v0.2.1`).
 Up-to-date ones are listed and skipped.
