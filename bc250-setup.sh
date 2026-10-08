@@ -1318,6 +1318,246 @@ boot_revert() {
     say "Restored."
 }
 
+# ============================================================ EXPERIMENTS ===
+# Trial fixes, kept apart so they're easy to take back out.
+
+# TV 4K fix. With the TV off when the board boots, the CH7218 adapter hands
+# out its own 1080p-only EDID ("CH7218") and keeps it after the TV comes on,
+# so the picture stays at 1080p and the Samsung overscans it (looks zoomed).
+# The packaged bc250-cec daemon never notices the TV turning on (the Samsung
+# only ever answers "to-on"), and its relink is a retrain that doesn't re-read
+# the EDID. This patches a copy of the daemon to count "to-on" as on and to
+# replug while the EDID is the adapter's fallback. The package's own file is
+# left alone; a systemd drop-in points the service at the copy.
+CECFIX_SRC=/usr/lib/bc250-cec/bc250-cec-daemon.sh
+CECFIX_SRC_SHA=c86c2e4837b772569951b352b6c2b423d15b72c4462ae52512bba7db7070872c
+CECFIX_OUT_SHA=0e7acbb95aa3e0525241ab7ae109e6acd3a0af3bca90425d1897e223ad91a3a8
+CECFIX_TARGET=/usr/local/lib/bc250-cec/bc250-cec-daemon.sh
+CECFIX_DROPIN_DIR=/etc/systemd/system/bc250-cec.service.d
+CECFIX_DROPIN=$CECFIX_DROPIN_DIR/10-bc250-setup-tv-4k.conf
+
+# Against bc250-cec 1-17's daemon (sha256 above).
+cecfix_patch() {
+    cat << 'CECFIX_PATCH'
+--- bc250-cec-daemon.sh.orig
++++ bc250-cec-daemon.sh
+@@ -116,6 +116,20 @@
+ # visible across them, but a file is. RuntimeDirectory=bc250-cec in the
+ # unit creates this, root-owned, cleaned up on stop.
+ readonly TRIGGER_STATE_FILE="${BC250_CEC_TRIGGER_STATE_FILE:-/run/bc250-cec/last-trigger}"
++# The CH7218 serves its own built-in EDID (product name "CH7218", a single
++# 1920x1080@60 mode, no CEC physical address) whenever the display behind
++# it was off or unreachable when the board read the EDID -- e.g. TV off at
++# boot. It never raises a hotplug once the TV comes back, and a retrain
++# does not re-read the EDID, so the board stays at 1080p and the TV
++# upscales it (the "zoomed in" picture). Seen on hardware 2026-10-08: TV
++# on at 16:11, board still on the CH7218 EDID until the cable was
++# replugged. While the connector's EDID carries this product name, every
++# relink is a full replug instead, retried a few times since the TV's
++# HDMI input can come up a few seconds after it answers CEC. Empty
++# disables the check.
++readonly FALLBACK_EDID_NAME="${BC250_CEC_FALLBACK_EDID_NAME:-CH7218}"
++readonly FALLBACK_REPLUG_ATTEMPTS="${BC250_CEC_FALLBACK_REPLUG_ATTEMPTS:-3}"
++readonly FALLBACK_REPLUG_DELAY_S="${BC250_CEC_FALLBACK_REPLUG_DELAY_S:-4}"
+ 
+ log() { printf 'bc250-cec: %s\n' "$1"; }
+ 
+@@ -156,9 +170,52 @@
+     find_debugfs_file "$connector" trigger_hotplug
+ }
+ 
+-# Retrain or replug, depending on which file find_relink_path() returned.
++# True while the connector's EDID is the CH7218's own fallback rather than
++# the display's (see FALLBACK_EDID_NAME). The connector's sysfs directory is
++# globbed like the debugfs one, so the card number is not hardcoded.
++edid_is_fallback() {
++    local connector="$1" edid
++    [[ -n "$FALLBACK_EDID_NAME" ]] || return 1
++    for edid in /sys/class/drm/card*-"$connector"/edid; do
++        [[ -e "$edid" ]] || continue
++        grep -aqF "$FALLBACK_EDID_NAME" "$edid" && return 0
++    done
++    return 1
++}
++
++# Replug until the board reads the display's own EDID, or give up after
++# FALLBACK_REPLUG_ATTEMPTS. A replug is what makes the board re-read the
++# EDID, and gamescope then picks the display's real mode on its own. One
++# wake keypress afterwards for Steam's black-screen-after-replug quirk
++# (see WAKE_KEY), since this is a full replug whatever RELINK_METHOD says.
++replug_off_fallback_edid() {
++    local connector="$1" hotplug_path attempt
++    hotplug_path="$(find_debugfs_file "$connector" trigger_hotplug)" || {
++        log "no trigger_hotplug for $connector; cannot leave the fallback EDID"
++        return 1
++    }
++    for (( attempt = 1; attempt <= FALLBACK_REPLUG_ATTEMPTS; attempt++ )); do
++        log "$connector has the adapter's fallback EDID ($FALLBACK_EDID_NAME); replugging (attempt $attempt/$FALLBACK_REPLUG_ATTEMPTS)"
++        echo 1 > "$hotplug_path" || log "failed to write $hotplug_path"
++        sleep "$FALLBACK_REPLUG_DELAY_S"
++        if ! edid_is_fallback "$connector"; then
++            log "$connector now has the display's own EDID"
++            inject_wake_key
++            return 0
++        fi
++    done
++    log "$connector still has the fallback EDID after $FALLBACK_REPLUG_ATTEMPTS replugs; giving up until the next trigger"
++    return 1
++}
++
++# Retrain or replug, depending on which file find_relink_path() returned --
++# or a replug regardless, while the connector is stuck on the fallback EDID.
+ relink() {
+     local trigger_path="$1" connector="$2"
++    if edid_is_fallback "$connector"; then
++        replug_off_fallback_edid "$connector" || true
++        return 0
++    fi
+     case "$trigger_path" in
+         */link_settings)
+             log "retraining the link on $connector"
+@@ -218,7 +275,11 @@
+         claim_logical_address "$dev"
+         out="$(cec-ctl -d "$dev" --to "$TV_LOGICAL_ADDRESS" --give-device-power-status 2>&1)" || true
+     fi
+-    if grep -qE 'pwr-state: on\b' <<<"$out"; then
++    # "to-on" counts as on: a Samsung TV keeps answering "to-on" (in
++    # transition standby -> on) indefinitely while fully on -- seen on
++    # hardware 2026-10-08, every reply for 15 hours -- so waiting for a
++    # plain "on" never saw it power on at all.
++    if grep -qE 'pwr-state: (on|to-on)\b' <<<"$out"; then
+         printf 'on\n'
+     elif grep -qE 'pwr-state: standby\b' <<<"$out"; then
+         printf 'off\n'
+@@ -360,7 +421,7 @@
+ # glitch the picture or spuriously fire a power-off command.
+ poll_power_loop() {
+     local cec_dev="$1" trigger_path="$2" connector="$3" own_addr="$4"
+-    local state prev_state="" baseline_set=0
++    local state prev_state="" baseline_set=0 fallback_tried=0
+ 
+     while :; do
+         state="$(query_power_state "$cec_dev")"
+@@ -382,6 +443,17 @@
+             log "baseline display power state: $state"
+         fi
+ 
++        # Safety net for the fallback EDID, once per stretch of "on": covers
++        # the display already being on when this service starts (the
++        # baseline reading never triggers) and a power-on whose replugs all
++        # came too early. Re-armed whenever the display reads anything but on.
++        if [[ "$state" != on ]]; then
++            fallback_tried=0
++        elif (( ! fallback_tried )) && edid_is_fallback "$connector"; then
++            fallback_tried=1
++            replug_off_fallback_edid "$connector" || true
++        fi
++
+         baseline_set=1
+         prev_state="$state"
+         sleep "$POLL_INTERVAL_S"
+@@ -414,6 +486,16 @@
+     log "watching for active-source switches to $own_addr"
+ 
+     while :; do
++        # The physical address comes from the display's EDID, so it changes
++        # under us: f.f.f.f while the adapter serves its fallback EDID, the
++        # real one after a replug (which is also what makes cec-ctl -m exit
++        # and land back here). Seen on hardware 2026-10-08: f.f.f.f all day.
++        local addr
++        addr="$(own_physical_address "$cec_dev")"
++        if [[ -n "$addr" && "$addr" != "$own_addr" ]]; then
++            own_addr="$addr"
++            log "physical address is now $own_addr"
++        fi
+         pending=0
+         # cec-ctl -m prints each message opcode on one line and its fields
+         # (e.g. "phys-addr: 2.3.0.0") on the following indented lines --
+CECFIX_PATCH
+}
+
+cecfix_restart() {
+    systemctl daemon-reload
+    if systemctl is-active --quiet bc250-cec.service; then
+        systemctl restart bc250-cec.service
+    fi
+}
+
+cecfix_install() {
+    say "TV 4K fix (experiment)"
+    if [ ! -f "$CECFIX_SRC" ]; then
+        warn "bc250-cec isn't installed ($CECFIX_SRC missing); nothing to patch."
+        return 1
+    fi
+    _sum=$(sha256sum "$CECFIX_SRC" | cut -d' ' -f1)
+    if [ "$_sum" != "$CECFIX_SRC_SHA" ]; then
+        warn "bc250-cec has been updated since this fix was written, so it"
+        warn "can't be applied safely. The packaged version stays in use."
+        if is_done cecfix; then
+            warn "Removing the old fix so the updated package runs as shipped."
+            cecfix_revert
+        fi
+        return 1
+    fi
+    command -v patch >/dev/null 2>&1 || pacman -S --needed --noconfirm patch
+    _dir=$(mktemp -d)
+    cecfix_patch > "$_dir/fix.patch"
+    if ! patch -s -o "$_dir/daemon.sh" "$CECFIX_SRC" "$_dir/fix.patch" >/dev/null 2>&1 ||
+       [ "$(sha256sum "$_dir/daemon.sh" | cut -d' ' -f1)" != "$CECFIX_OUT_SHA" ]; then
+        rm -rf "$_dir"
+        warn "The patch didn't apply cleanly; nothing was changed."
+        return 1
+    fi
+    install -Dm755 "$_dir/daemon.sh" "$CECFIX_TARGET"
+    rm -rf "$_dir"
+    mkdir -p "$CECFIX_DROPIN_DIR"
+    cat > "$CECFIX_DROPIN" << DROPIN
+# Written by bc250-setup.sh (Experiments > TV 4K fix). Remove it from the
+# same menu. Runs a patched copy of the packaged daemon.
+[Service]
+ExecStart=
+ExecStart=$CECFIX_TARGET
+DROPIN
+    cecfix_restart
+    mark cecfix
+    say "Installed. To try it: TV off, restart the box, then turn the TV on"
+    say "once it's up. Expect one quick blink, then 4K."
+}
+
+cecfix_revert() {
+    say "Removing the TV 4K fix"
+    rm -f "$CECFIX_DROPIN" "$CECFIX_TARGET"
+    rmdir "$CECFIX_DROPIN_DIR" /usr/local/lib/bc250-cec 2>/dev/null || true
+    cecfix_restart
+    unmark cecfix
+    say "Done. bc250-cec runs the packaged version again."
+}
+
+experiments_menu() {
+    while :; do
+        header "experiments"
+        printf '  %sTrial fixes. Pick one again to remove it.%s\n\n' "$C_DIM" "$C_RESET"
+        item 1 "TV 4K fix (TV off at boot)" "$(status cecfix)"
+        echo
+        item b "Back"
+        printf '\n  %sChoice:%s ' "$C_CYAN" "$C_RESET"
+        read -r c
+        case "$c" in
+            1) if is_done cecfix; then
+                   if confirm "Remove the TV 4K fix?"; then cecfix_revert || true; fi
+               else
+                   say "If the TV was off when the box started, the picture can get"
+                   say "stuck at 1080p and look zoomed in. This makes the box notice"
+                   say "the TV turning on and re-read it, so it goes back to 4K."
+                   if confirm "Install it?"; then cecfix_install || true; fi
+               fi
+               pause ;;
+            b|B) return ;;
+            *) warn "no such option"; sleep 1 ;;
+        esac
+    done
+}
+
 # ================================================================= DECKY ====
 
 DECKY_DIR="$REAL_HOME/homebrew/plugins"
@@ -1948,6 +2188,20 @@ show_status() {
         _none "limine.conf" "not found"
     fi
 
+    # ---- x. Experiments
+    echo
+    item x "TV 4K fix (experiment)" "$(status cecfix)"
+    if is_done cecfix; then
+        _file_line "patched daemon" "$CECFIX_TARGET" yes
+        _file_line "service override" "$CECFIX_DROPIN" yes
+        if [ -f "$CECFIX_SRC" ] &&
+           [ "$(sha256sum "$CECFIX_SRC" | cut -d' ' -f1)" != "$CECFIX_SRC_SHA" ]; then
+            _bad "bc250-cec" "package updated since the fix; remove it in Experiments"
+        fi
+    else
+        _none "service override" "not installed"
+    fi
+
     echo
     if [ "$_PROBLEMS" -eq 0 ]; then
         say "Nothing looks broken."
@@ -2083,6 +2337,7 @@ refresh_installed() {
     if is_done atv;   then atv_write_files || warn "android tv refresh failed"; _did=1; fi
     # Boot loader updates can rewrite limine.conf.
     if is_done boot;  then boot_install  || warn "boot menu refresh failed"; _did=1; fi
+    if is_done cecfix; then cecfix_install || warn "TV 4K fix not re-applied"; _did=1; fi
     # Plugins updated outside this script may need packages they didn't before.
     for _p in $EMBEDDED_PLUGINS; do
         if [ -d "$DECKY_DIR/$_p" ]; then
@@ -2148,6 +2403,7 @@ revert_menu() {
             7) ctlcenter_revert || true; pause ;;
             8) boot_revert  || true; pause ;;
             9) if confirm "Revert everything?"; then
+                   if is_done cecfix; then cecfix_revert || true; fi
                    boot_revert  || true
                    ctlcenter_revert || true
                    atv_revert   || true
@@ -2188,6 +2444,7 @@ main_menu() {
         item 6 "Android TV (Waydroid)"   "$(status atv)"
         item 7 "BC-250 Control Center"   "$(status ctlcenter)"
         item 8 "Quick, quiet boot menu"  "$(status boot)"
+        item x "Experiments"             "$(status cecfix)"
         rule
         item a "Install all"
         item s "Status: what is actually installed"
@@ -2206,6 +2463,7 @@ main_menu() {
             6) atv_install   || true; pause ;;
             7) ctlcenter_install || true; pause ;;
             8) boot_install || true; pause ;;
+            x|X) experiments_menu ;;
             a|A) install_all; pause ;;
             s|S) show_status || true; pause ;;
             t|T) cec_test || true; pause ;;
