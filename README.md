@@ -133,6 +133,12 @@ replaces them and reloads Decky. When changing a plugin, bump `version` in its
 `package.json` and the matching entry in `plugins/versions.json`, then rebuild
 the zip and re-embed it.
 
+It does the same for this script: every run records where the script lives in
+`/var/lib/bc250-setup/script-path`, and System Updates compares that file with
+the repo copy and offers an "Update setup tool" button (keeps a `.bak`, then
+flags the next run to re-apply installed components, as `u` does). A copy
+inside a git checkout is left to `git pull`.
+
 No credentials are baked in. Discord Deck stores its client ID and secret in
 Decky's settings dir at runtime (mode 600), not in the plugin.
 
