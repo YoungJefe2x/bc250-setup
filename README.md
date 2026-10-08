@@ -125,6 +125,14 @@ Installs Decky Loader first if it's missing, using the official installer.
 The copies under `plugins/` are the same zips, kept as a backup and for
 installing by hand.
 
+Decky only offers updates for plugins in its own store, so these never get its
+update badge. System Updates fills that in: each time it checks (and on "Check
+again") it reads `plugins/versions.json` from this repo, compares it with the
+installed copies, notifies when one is newer and shows an Update button that
+replaces them and reloads Decky. When changing a plugin, bump `version` in its
+`package.json` and the matching entry in `plugins/versions.json`, then rebuild
+the zip and re-embed it.
+
 No credentials are baked in. Discord Deck stores its client ID and secret in
 Decky's settings dir at runtime (mode 600), not in the plugin.
 
