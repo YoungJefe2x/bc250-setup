@@ -52,18 +52,60 @@ fi
 mark()      { touch "$STATE_DIR/$1"; }
 unmark()    { rm -f "$STATE_DIR/$1"; }
 is_done()   { [ -e "$STATE_DIR/$1" ]; }
-status()    { if is_done "$1"; then printf 'installed'; else printf 'not installed'; fi; }
+# Colors only on a real terminal, and never when NO_COLOR is set.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    C_RESET=$(printf '\033[0m');  C_BOLD=$(printf '\033[1m');  C_DIM=$(printf '\033[2m')
+    C_RED=$(printf '\033[31m');   C_GREEN=$(printf '\033[32m'); C_YELLOW=$(printf '\033[33m')
+    C_CYAN=$(printf '\033[36m')
+else
+    C_RESET=""; C_BOLD=""; C_DIM=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_CYAN=""
+fi
+# Box-drawing and dots when the terminal speaks UTF-8, plain ASCII otherwise.
+case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+    *UTF-8*|*utf8*|*UTF8*|*utf-8*) G_ON="●"; G_OFF="○"; G_LINE="─" ;;
+    *) G_ON="*"; G_OFF="-"; G_LINE="-" ;;
+esac
 
-say()  { printf '\n>> %s\n' "$1"; }
-warn() { printf '!! %s\n' "$1" >&2; }
+status() {
+    if is_done "$1"; then printf '%s%s installed%s' "$C_GREEN" "$G_ON" "$C_RESET"
+    else printf '%s%s not installed%s' "$C_DIM" "$G_OFF" "$C_RESET"; fi
+}
+
+say()  { printf '\n%s==>%s %s%s%s\n' "$C_CYAN" "$C_RESET" "$C_BOLD" "$1" "$C_RESET"; }
+warn() { printf '%s!!%s %s\n' "$C_YELLOW" "$C_RESET" "$1" >&2; }
 
 confirm() {
-    printf '%s [y/N] ' "$1"
+    printf '%s?%s %s %s[y/N]%s ' "$C_CYAN" "$C_RESET" "$1" "$C_DIM" "$C_RESET"
     read -r ans
     case "$ans" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
 }
 
-pause() { printf '\nPress Enter to continue... '; read -r _; }
+pause() { printf '\n%sPress Enter to continue...%s ' "$C_DIM" "$C_RESET"; read -r _; }
+
+# A horizontal rule as wide as the menus.
+rule() {
+    _r=""; _i=0
+    while [ "$_i" -lt 46 ]; do _r="$_r$G_LINE"; _i=$((_i + 1)); done
+    printf '  %s%s%s\n' "$C_DIM" "$_r" "$C_RESET"
+}
+
+# Title block: name, then host and kernel underneath.
+header() {
+    [ -t 1 ] && printf '\033[H\033[2J'
+    echo
+    printf '  %s%sBC-250 setup%s  %s%s%s\n' "$C_BOLD" "$C_CYAN" "$C_RESET" "$C_DIM" "$1" "$C_RESET"
+    printf '  %s%s  ·  kernel %s%s\n' "$C_DIM" "$(uname -n)" "$(uname -r)" "$C_RESET"
+    rule
+}
+
+# One menu line: key, label, and an optional status on the right.
+item() {
+    if [ -n "${3:-}" ]; then
+        printf '  %s%s%s  %-26s %s\n' "$C_BOLD" "$1" "$C_RESET" "$2" "$3"
+    else
+        printf '  %s%s%s  %s\n' "$C_BOLD" "$1" "$C_RESET" "$2"
+    fi
+}
 
 # ----------------------------------------------------------- dependencies ---
 
@@ -1521,9 +1563,9 @@ decky_revert() {
 # service or a file shows up as broken rather than fine.
 _PROBLEMS=0
 
-_ok()   { printf '     [+] %-20s %s\n' "$1" "$2"; }
-_bad()  { printf '     [!] %-20s %s\n' "$1" "$2"; _PROBLEMS=$((_PROBLEMS + 1)); }
-_none() { printf '     [-] %-20s %s\n' "$1" "$2"; }
+_ok()   { printf '     %s[+]%s %-20s %s\n' "$C_GREEN" "$C_RESET" "$1" "$2"; }
+_bad()  { printf '     %s[!]%s %-20s %s%s%s\n' "$C_RED" "$C_RESET" "$1" "$C_RED" "$2" "$C_RESET"; _PROBLEMS=$((_PROBLEMS + 1)); }
+_none() { printf '     %s[-] %-20s %s%s\n' "$C_DIM" "$1" "$2" "$C_RESET"; }
 
 # "enabled, active" / "disabled, inactive" / "missing"
 _unit() {
@@ -1559,13 +1601,12 @@ _file_line() {
 show_status() {
     _PROBLEMS=0
     echo
-    echo "  ======== Status ========"
-    printf '  %s  ·  kernel %s\n' "$(uname -n)" "$(uname -r)"
-    printf '  user %s  ·  home %s\n' "$REAL_USER" "$REAL_HOME"
+    header "status"
+    printf '  %suser %s  ·  home %s%s\n' "$C_DIM" "$REAL_USER" "$REAL_HOME" "$C_RESET"
 
     # ---- 1. CEC
     echo
-    printf '  1. HDMI-CEC TV control            [%s]\n' "$(status cec)"
+    item 1 "HDMI-CEC TV control" "$(status cec)"
     _w=no; is_done cec && _w=yes
     if [ -e /dev/cec0 ]; then
         _pa=$(cec-ctl -d /dev/cec0 2>/dev/null | awk '/Physical Address/ {print $4; exit}')
@@ -1598,7 +1639,7 @@ show_status() {
 
     # ---- 2. LED
     echo
-    printf '  2. LED strip daemon               [%s]\n' "$(status led)"
+    item 2 "LED strip daemon" "$(status led)"
     _w=no; is_done led && _w=yes
     _file_line "led binary" /usr/local/bin/led "$_w"
     if [ -f /etc/led-controller/config.json ]; then
@@ -1619,7 +1660,7 @@ show_status() {
 
     # ---- 3. Power
     echo
-    printf '  3. Disable sleep / suspend        [%s]\n' "$(status power)"
+    item 3 "Disable sleep / suspend" "$(status power)"
     _masked=0
     for _t in sleep.target suspend.target hibernate.target hybrid-sleep.target; do
         [ "$(systemctl is-enabled "$_t" 2>/dev/null)" = masked ] && _masked=$((_masked + 1))
@@ -1636,7 +1677,7 @@ show_status() {
 
     # ---- 4. Guide button
     echo
-    printf '  4. Guide button -> input          [%s]\n' "$(status guide)"
+    item 4 "Guide button -> input" "$(status guide)"
     _w=no; is_done guide && _w=yes
     _file_line "cec-guide-watch" /usr/local/bin/cec-guide-watch "$_w"
     _unit_line "cec-guide" cec-guide.service "$_w"
@@ -1644,7 +1685,7 @@ show_status() {
 
     # ---- 5. Decky
     echo
-    printf '  5. Decky plugins                  [%s]\n' "$(status decky)"
+    item 5 "Decky plugins" "$(status decky)"
     if decky_present; then
         _ok "Decky Loader" "$REAL_HOME/homebrew"
     else
@@ -1666,7 +1707,7 @@ show_status() {
 
     # ---- 6. Android TV
     echo
-    printf '  6. Android TV (Waydroid)          [%s]\n' "$(status atv)"
+    item 6 "Android TV (Waydroid)" "$(status atv)"
     _w=no; is_done atv && _w=yes
     if command -v waydroid >/dev/null 2>&1; then _ok "waydroid" "installed"
     elif [ "$_w" = yes ]; then _bad "waydroid" "not installed"
@@ -1677,7 +1718,7 @@ show_status() {
 
     # ---- 7. Control Center
     echo
-    printf '  7. BC-250 Control Center          [%s]\n' "$(status ctlcenter)"
+    item 7 "BC-250 Control Center" "$(status ctlcenter)"
     if pacman -Qq bc250-control-center-git >/dev/null 2>&1; then
         _ok "package" "$(pacman -Q bc250-control-center-git 2>/dev/null)"
     elif is_done ctlcenter; then
@@ -1852,20 +1893,18 @@ install_all() {
 
 revert_menu() {
     while :; do
-        cat << MENU
-
-  ---- Revert ----
-  1) HDMI-CEC TV control     [$(status cec)]
-  2) LED strip daemon        [$(status led)]
-  3) Disable sleep / suspend [$(status power)]
-  4) Guide button -> input   [$(status guide)]
-  5) Decky plugins           [$(status decky)]
-  6) Android TV (Waydroid)   [$(status atv)]
-  7) BC-250 Control Center   [$(status ctlcenter)]
-  8) Revert everything
-  b) Back
-MENU
-        printf '\nChoice: '
+        header "revert / remove"
+        item 1 "HDMI-CEC TV control"     "$(status cec)"
+        item 2 "LED strip daemon"        "$(status led)"
+        item 3 "Disable sleep / suspend" "$(status power)"
+        item 4 "Guide button -> input"   "$(status guide)"
+        item 5 "Decky plugins"           "$(status decky)"
+        item 6 "Android TV (Waydroid)"   "$(status atv)"
+        item 7 "BC-250 Control Center"   "$(status ctlcenter)"
+        echo
+        item 8 "Revert everything"
+        item b "Back"
+        printf '\n  %sChoice:%s ' "$C_CYAN" "$C_RESET"
         read -r c
         case "$c" in
             1) cec_revert   || true; pause ;;
@@ -1886,7 +1925,7 @@ MENU
                fi
                pause ;;
             b|B) return ;;
-            *) warn "no such option" ;;
+            *) warn "no such option"; sleep 1 ;;
         esac
     done
 }
@@ -1906,25 +1945,22 @@ main_menu() {
         pause
     fi
     while :; do
-        cat << MENU
-
-  ======== BC-250 setup ========
-  1) HDMI-CEC TV control     [$(status cec)]
-  2) LED strip daemon        [$(status led)]
-  3) Disable sleep / suspend [$(status power)]
-  4) Guide button -> input   [$(status guide)]
-  5) Decky plugins           [$(status decky)]
-  6) Android TV (Waydroid)   [$(status atv)]
-  7) BC-250 Control Center   [$(status ctlcenter)]
-
-  a) Install all
-  s) Status — what is actually installed
-  t) Test HDMI-CEC
-  u) Update this script
-  r) Revert / remove
-  q) Quit
-MENU
-        printf '\nChoice: '
+        header "game-mode console setup"
+        item 1 "HDMI-CEC TV control"     "$(status cec)"
+        item 2 "LED strip daemon"        "$(status led)"
+        item 3 "Disable sleep / suspend" "$(status power)"
+        item 4 "Guide button -> input"   "$(status guide)"
+        item 5 "Decky plugins"           "$(status decky)"
+        item 6 "Android TV (Waydroid)"   "$(status atv)"
+        item 7 "BC-250 Control Center"   "$(status ctlcenter)"
+        rule
+        item a "Install all"
+        item s "Status: what is actually installed"
+        item t "Test HDMI-CEC"
+        item u "Update this script"
+        item r "Revert / remove"
+        item q "Quit"
+        printf '\n  %sChoice:%s ' "$C_CYAN" "$C_RESET"
         read -r c
         case "$c" in
             1) cec_install   || true; pause ;;
@@ -1940,7 +1976,7 @@ MENU
             u|U) self_update || true; pause ;;
             r|R) revert_menu ;;
             q|Q) exit 0 ;;
-            *) warn "no such option" ;;
+            *) warn "no such option"; sleep 1 ;;
         esac
     done
 }
