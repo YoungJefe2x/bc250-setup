@@ -145,7 +145,9 @@ Decky only offers updates for plugins in its own store, so these never get its
 update badge. System Updates fills that in: each time it checks (and on "Check
 again") it reads `plugins/versions.json` from this repo, compares it with the
 installed copies, notifies when one is newer and shows an Update button that
-replaces them and reloads Decky. When changing a plugin, bump `version` in its
+replaces them. Decky isn't restarted on its own: a "Restart Decky now" button
+appears instead, and both buttons stay disabled while a system update is
+running. When changing a plugin, bump `version` in its
 `package.json` and the matching entry in `plugins/versions.json`, then rebuild
 the zip and re-embed it.
 
