@@ -1702,7 +1702,7 @@ show_status() {
             "$DISCORD_SETTINGS_DIR/config.json" 2>/dev/null; then
         _ok "Discord creds" "set"
     elif [ -d "$DECKY_DIR/discord-deck" ]; then
-        _bad "Discord creds" "not set — reinstall option 6 to enter them"
+        _bad "Discord creds" "not set — reinstall option 5 to enter them"
     fi
 
     # ---- 6. Android TV
