@@ -1,0 +1,28 @@
+{
+  "plugins": [
+    {
+      "dir": "bc250-lighting",
+      "name": "BC-250 Lighting",
+      "version": "0.2.0",
+      "zip": "plugins/bc250-lighting.zip"
+    },
+    {
+      "dir": "System Updates",
+      "name": "System Updates",
+      "version": "1.1.0",
+      "zip": "plugins/system-updates.zip"
+    },
+    {
+      "dir": "discord-deck",
+      "name": "Discord Deck",
+      "version": "0.1.0",
+      "zip": "plugins/discord-deck.zip"
+    },
+    {
+      "dir": "cec-remote",
+      "name": "CEC Remote",
+      "version": "0.1.0",
+      "zip": "plugins/cec-remote.zip"
+    }
+  ]
+}
