@@ -1328,10 +1328,10 @@ boot_revert() {
 # out its own 1080p-only EDID ("CH7218") and keeps it after the TV comes on,
 # so the picture stays at 1080p and the Samsung overscans it (looks zoomed).
 # That EDID carries no CEC address, so the TV can't be heard turning on, and
-# the adapter sends no hotplug. This patches a copy of the daemon to replug
-# every 30 seconds (every minute after ten minutes) while the EDID is the
-# adapter's fallback, which is unseen while the TV is off and brings 4K back
-# shortly after it comes on. It also counts the Samsung's "to-on" as on.
+# the adapter sends no hotplug. This patches a copy of the daemon to count
+# the Samsung's "to-on" as on and to replug while the EDID is the adapter's
+# fallback. A timed replug (FALLBACK_PROBE_S) is included but off by default:
+# a software hotplug does not make the CH7218 re-read the EDID.
 # The package's own file is left alone; a systemd drop-in points the
 # service at the copy.
 CECFIX_SRC=/usr/lib/bc250-cec/bc250-cec-daemon.sh
@@ -1345,7 +1345,7 @@ cecfix_patch() {
     cat << 'CECFIX_PATCH'
 --- bc250-cec-daemon.sh.orig
 +++ bc250-cec-daemon.sh
-@@ -116,6 +116,29 @@
+@@ -116,6 +116,31 @@
  # visible across them, but a file is. RuntimeDirectory=bc250-cec in the
  # unit creates this, root-owned, cleaned up on stop.
  readonly TRIGGER_STATE_FILE="${BC250_CEC_TRIGGER_STATE_FILE:-/run/bc250-cec/last-trigger}"
@@ -1368,14 +1368,16 @@ cecfix_patch() {
 +# announces it turning on; the adapter raises no hotplug either. The poll
 +# loop therefore replugs on a timer while the fallback EDID is present:
 +# every FALLBACK_PROBE_S seconds for the first FALLBACK_PROBE_FAST_FOR_S
-+# seconds, then every FALLBACK_PROBE_SLOW_S. 0 disables the timer.
-+readonly FALLBACK_PROBE_S="${BC250_CEC_FALLBACK_PROBE_S:-30}"
++# seconds, then every FALLBACK_PROBE_SLOW_S. 0 disables the timer, the
++# default: on the CH7218 a debugfs hotplug blanks the picture but does not
++# make the adapter re-read the TV's EDID (tested 2026-10-09).
++readonly FALLBACK_PROBE_S="${BC250_CEC_FALLBACK_PROBE_S:-0}"
 +readonly FALLBACK_PROBE_FAST_FOR_S="${BC250_CEC_FALLBACK_PROBE_FAST_FOR_S:-600}"
 +readonly FALLBACK_PROBE_SLOW_S="${BC250_CEC_FALLBACK_PROBE_SLOW_S:-60}"
  
  log() { printf 'bc250-cec: %s\n' "$1"; }
  
-@@ -156,9 +179,69 @@
+@@ -156,9 +181,69 @@
      find_debugfs_file "$connector" trigger_hotplug
  }
  
@@ -1446,7 +1448,7 @@ cecfix_patch() {
      case "$trigger_path" in
          */link_settings)
              log "retraining the link on $connector"
-@@ -218,7 +301,11 @@
+@@ -218,7 +303,11 @@
          claim_logical_address "$dev"
          out="$(cec-ctl -d "$dev" --to "$TV_LOGICAL_ADDRESS" --give-device-power-status 2>&1)" || true
      fi
@@ -1459,7 +1461,7 @@ cecfix_patch() {
          printf 'on\n'
      elif grep -qE 'pwr-state: standby\b' <<<"$out"; then
          printf 'off\n'
-@@ -360,7 +447,8 @@
+@@ -360,7 +449,8 @@
  # glitch the picture or spuriously fire a power-off command.
  poll_power_loop() {
      local cec_dev="$1" trigger_path="$2" connector="$3" own_addr="$4"
@@ -1469,7 +1471,7 @@ cecfix_patch() {
  
      while :; do
          state="$(query_power_state "$cec_dev")"
-@@ -382,6 +470,26 @@
+@@ -382,6 +472,26 @@
              log "baseline display power state: $state"
          fi
  
@@ -1496,7 +1498,7 @@ cecfix_patch() {
          baseline_set=1
          prev_state="$state"
          sleep "$POLL_INTERVAL_S"
-@@ -414,6 +522,16 @@
+@@ -414,6 +524,16 @@
      log "watching for active-source switches to $own_addr"
  
      while :; do
@@ -1561,7 +1563,7 @@ DROPIN
     cecfix_restart
     mark cecfix
     say "Installed. To try it: TV off, restart the box, then turn the TV on"
-    say "once it's up. Within about 30 seconds expect one quick blink, then 4K."
+    say "once it's up. Expect one quick blink, then 4K."
 }
 
 cecfix_revert() {
@@ -1587,8 +1589,8 @@ experiments_menu() {
                    if confirm "Remove the TV 4K fix?"; then cecfix_revert || true; fi
                else
                    say "If the TV was off when the box started, the picture can get"
-                   say "stuck at 1080p and look zoomed in. This makes the box re-check"
-                   say "the TV every 30 seconds while it's stuck, so it goes back to 4K."
+                   say "stuck at 1080p and look zoomed in. This makes the box notice"
+                   say "the TV turning on and re-read it, so it goes back to 4K."
                    if confirm "Install it?"; then cecfix_install || true; fi
                fi
                pause ;;
