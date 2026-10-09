@@ -98,7 +98,7 @@ running game-mode session and leave the screen black.
 
 ### 4. Guide button → input
 
-Pressing the controller's guide button wakes the TV and claims the input.
+Pressing the controller's guide button (Xbox, PS or Steam button) wakes the TV and claims the input.
 An evdev listener watches for `BTN_MODE` with a 3-second debounce (guide is
 also Steam's menu button). It opens each input device at most once and then
 holds it, caching which paths are not gamepads, so at steady state it opens
@@ -191,8 +191,8 @@ pad*`), so physical controllers stay hidden and presses don't leak through
 while you're in the Steam UI. **Steam Input must be on for the shortcut** or
 that virtual pad won't exist and Android will see no controller at all.
 
-Steam keeps the Xbox button for its own menu, so Android never gets a Home
-press from it. **Hold View or Menu (the two small buttons) for about a second**
+Steam keeps the guide button (Xbox / PS) for its own menu, so Android never gets a Home
+press from it. **Hold View or Menu (Create or Options on PlayStation, the two small buttons) for about a second**
 to go Home instead. A short tap still reaches Android as a normal press. This is a small root
 service, `atv-home-button`, that reads the same virtual pad and presses Home
 with `waydroid shell input keyevent 3`, only while the Android TV window is up.
