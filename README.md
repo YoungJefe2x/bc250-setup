@@ -15,7 +15,7 @@ sudo sh bc250-setup.sh
   3) Disable sleep / suspend [not installed]
   4) Guide button -> input   [not installed]
   5) Decky plugins           [not installed]
-  6) Android TV (Waydroid)   [not installed]
+  6) Apps                    [not installed]
   7) BC-250 Control Center   [not installed]
 
   a) Install all
@@ -111,6 +111,12 @@ for `BTN_MODE`.
 
 ### 5. Decky plugins
 
+Opens a list of every plugin below with its status: not installed, up to
+date, or an update with both version numbers. Pick one to install or update
+it, pick an up-to-date one to remove it, or press `a` to install and update
+everything that needs it. Decky Loader is offered first if it's missing, and
+Decky restarts once when you leave the list if anything changed.
+
 Four plugins are embedded in the script as base64 — no separate files
 needed:
 
@@ -178,7 +184,22 @@ Discord has no anonymous path for this — the client ID identifies the app to
 the local RPC socket and the secret is required to exchange the auth code for
 a token, so every install needs its own application.
 
-### 6. Android TV (Waydroid)
+### 6. Apps
+
+A list of apps that are added to the Steam library automatically (System
+Updates adds the shortcut within a few seconds in game mode, and takes it out
+again when the app is removed here):
+
+| App | How |
+|---|---|
+| Android TV | Waydroid, below |
+| Xbox Cloud Gaming | [Greenlight](https://github.com/unknownskl/greenlight) from Flathub, launched by `~/xbox-cloud-gaming.sh` |
+| GeForce NOW | NVIDIA's own Linux app (Flatpak `com.nvidia.geforcenow`), launched by `~/geforce-now.sh`. Install it from NVIDIA first; this only adds it to Steam |
+
+The cloud gaming launchers clear `LD_PRELOAD` before starting the Flatpak, so
+Steam's overlay library doesn't get loaded into them.
+
+#### Android TV (Waydroid)
 
 Installs `waydroid`, `cage` and `wlr-randr`, downloads and initialises the
 WayDroid-ATV images from its OTA channel (falling back to
