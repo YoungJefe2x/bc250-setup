@@ -944,28 +944,43 @@ atv_write_files() {
     # Steam keeps the guide (Xbox / PS) button for its own menu, so Android never
     # sees a Home press. Holding View or Menu stands in for it. Runs as root so it can read
     # the pad and reach Waydroid without any sudo rule; it only acts while the
-    # Android TV window (cage) is up.
+    # Android TV window (cage) is up. It also keeps controllers that reconnect
+    # while Android TV is open out of Android, so input stays with whatever is
+    # on screen.
     cat > /usr/local/bin/atv-home-button << 'HOMEBTN'
 #!/usr/bin/env python3
-"""Hold View or Menu on the controller -> Android Home, in Android TV only.
+"""Android TV helper: Home on a held button, and only Steam's pad in Android.
 
+Hold View or Menu on the controller -> Android Home, in Android TV only.
 Reads Steam's virtual pad, the "Microsoft X-Box 360 pad" Android also sees.
 Steam presents every controller through it, so Create / Options on a
 PlayStation pad arrive here as View / Menu.
 A hold of HOLD seconds presses Home once; a short tap is left alone.
+
+Android is meant to see only Steam's virtual pad: the launcher hands it just
+that one, so the Quick Access menu and the rest of Steam keep their input.
+A controller or keyboard that reconnects while Android TV is open is
+announced to Android like any new device, and Android would then read it
+directly whatever is on screen. Its node is removed again from Android's own
+/dev/input (a separate tmpfs; the host's node is untouched).
 """
-import fcntl, glob, os, select, struct, subprocess, time
+import glob, os, select, struct, subprocess, time
 
 HOLD = 0.8
 EVENT = struct.Struct("llHHi")
 EV_KEY = 0x01
 BUTTONS = (0x13A, 0x13B)  # BTN_SELECT (View), BTN_START (Menu)
-EVIOCGNAME = (2 << 30) | (256 << 16) | (ord("E") << 8) | 0x06
+PAD = "Microsoft X-Box 360 pad"
+# Android's device manager creates the node a moment after the device shows
+# up; remove it then, and once more in case it was slow.
+PURGE_AFTER = (1.5, 5.0)
 
 
-def name(fd):
+def name(path):
+    node = os.path.basename(path)
     try:
-        return fcntl.ioctl(fd, EVIOCGNAME, bytes(256)).split(b"\0", 1)[0].decode()
+        with open(f"/sys/class/input/{node}/device/name") as f:
+            return f.read().strip()
     except OSError:
         return ""
 
@@ -975,32 +990,76 @@ def android_up():
                           stderr=subprocess.DEVNULL).returncode == 0
 
 
+def shell(*cmd, timeout=15):
+    return subprocess.run(["/usr/bin/waydroid", "shell", *cmd],
+                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, timeout=timeout, text=True)
+
+
 def home():
-    subprocess.run(["/usr/bin/waydroid", "shell", "input", "keyevent", "3"],
-                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL, timeout=15)
+    shell("input", "keyevent", "3")
 
 
-fds = {}            # fd -> path
+def own_dev_input():
+    """True when Android's /dev/input is its own, not the host's."""
+    try:
+        mounts = shell("cat", "/proc/mounts").stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    dev = [l.split() for l in mounts.splitlines() if len(l.split()) > 2]
+    if any(m[1] == "/dev/input" for m in dev):
+        return False
+    return any(m[1] == "/dev" and m[2] == "tmpfs" for m in dev)
+
+
+def purge(paths):
+    """Drop host devices other than Steam's pad from Android."""
+    # Names are read again now: a node that has only just appeared can
+    # briefly have none, and Steam's pads must stay.
+    paths = [p for p in paths if os.path.exists(p) and not name(p).startswith(PAD)]
+    if paths and own_dev_input():
+        try:
+            shell("rm", "-f", *sorted(paths))
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+fds = {}            # fd -> path, Steam pads held open
 down = {}           # (fd, button) -> time it went down, None once fired
+seen = set()        # every event node seen so far
+was_up = None       # unknown until the first scan
+purges = []         # (when, paths)
 next_scan = 0.0
 while True:
     now = time.monotonic()
     if now >= next_scan:
-        next_scan = now + 3
-        for path in glob.glob("/dev/input/event*"):
-            if path in fds.values():
+        next_scan = now + 1
+        up = android_up()
+        paths = set(glob.glob("/dev/input/event*"))
+        new = paths - seen
+        seen = paths
+        for path in paths:
+            if path in fds.values() or not name(path).startswith(PAD):
                 continue
             try:
-                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+                fds[os.open(path, os.O_RDONLY | os.O_NONBLOCK)] = path
             except OSError:
-                continue
-            if name(fd).startswith("Microsoft X-Box 360 pad"):
-                fds[fd] = path
-            else:
-                os.close(fd)
+                pass
+        # Opening Android TV starts clean; anything plugged in after that is
+        # kept out of Android. Starting while it is already open (after an
+        # update) clears out whatever got in before.
+        if up and was_up is None:
+            purges.append((now, paths))
+        elif up and was_up and new:
+            purges += [(now + d, new) for d in PURGE_AFTER]
+        if not up:
+            purges.clear()
+        was_up = up
+    for item in [p for p in purges if p[0] <= now]:
+        purges.remove(item)
+        purge(item[1])
     if not fds:
-        time.sleep(2)
+        time.sleep(0.5)
         continue
     ready, _, _ = select.select(list(fds), [], [], 0.1)
     for fd in ready:
@@ -1032,7 +1091,7 @@ HOMEBTN
 
     cat > /etc/systemd/system/atv-home-button.service << 'UNIT'
 [Unit]
-Description=Android TV: hold View/Create or Menu/Options for Home
+Description=Android TV: hold View/Create or Menu/Options for Home; keep reconnected controllers out
 After=waydroid-container.service
 
 [Service]
