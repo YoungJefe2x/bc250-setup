@@ -195,9 +195,14 @@ again when the app is removed here):
 | Android TV | Waydroid, below |
 | Xbox Cloud Gaming | [Greenlight](https://github.com/unknownskl/greenlight) from Flathub, launched by `~/xbox-cloud-gaming.sh` |
 | GeForce NOW | NVIDIA's own Linux app (Flatpak `com.nvidia.geforcenow`), launched by `~/geforce-now.sh`. Install it from NVIDIA first; this only adds it to Steam |
+| Discord | Whichever Discord client is installed (Arch's `discord` if none), launched by `~/discord.sh` |
 
 The cloud gaming launchers clear `LD_PRELOAD` before starting the Flatpak, so
 Steam's overlay library doesn't get loaded into them.
+
+A shortcut System Updates creates also gets library art (capsule, wide capsule,
+hero, logo) and an icon, drawn from the app's own icon. Shortcuts that already
+exist, and art you set yourself, are never changed.
 
 #### Android TV (Waydroid)
 
