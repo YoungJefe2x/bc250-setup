@@ -194,7 +194,7 @@ again when the app is removed here):
 |---|---|
 | Android TV | Waydroid, below |
 | Xbox Cloud Gaming | Microsoft Edge (Flatpak) full screen on xbox.com/play, launched by `~/xbox-cloud-gaming.sh`. Add [Better xCloud](https://better-xcloud.github.io/chromium/) once in desktop mode (Tampermonkey plus its userscript) for controller-friendly menus |
-| GeForce NOW | NVIDIA's own Linux app (Flatpak `com.nvidia.geforcenow`), launched by `~/geforce-now.sh`. Install it from NVIDIA first; this only adds it to Steam |
+| GeForce NOW | Microsoft Edge (Flatpak) full screen on play.geforcenow.com, launched by `~/geforce-now.sh`. NVIDIA's own Linux app can't run on the BC-250 (it needs a Vulkan video-decode queue the GPU lacks), so video is decoded on the CPU |
 | Discord | Whichever Discord client is installed (Arch's `discord` if none), launched by `~/discord.sh` |
 
 The cloud gaming launchers clear `LD_PRELOAD` before starting the Flatpak, so

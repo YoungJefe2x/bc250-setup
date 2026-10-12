@@ -1224,7 +1224,6 @@ atv_revert() {
 # Cloud gaming apps from Flatpak. Each gets a small launcher in the home
 # folder, which System Updates adds to the Steam library like Android TV.
 
-GFN_APP=com.nvidia.geforcenow
 
 # flatpak_has APP: installed system-wide or for the user.
 flatpak_has() {
@@ -1233,50 +1232,45 @@ flatpak_has() {
         runuser -u "$REAL_USER" -- flatpak info "$1" >/dev/null 2>&1
 }
 
-# write_flatpak_launcher FILE APP: a launcher Steam can start. Steam's
-# overlay library is left out: it can crash Electron apps and doesn't reach
-# inside the Flatpak sandbox anyway.
-write_flatpak_launcher() {
-    cat > "$1" << LAUNCH
-#!/bin/sh
-# Started from the Steam library in game mode.
-unset LD_PRELOAD
-exec flatpak run $2 "\$@"
-LAUNCH
-    chmod +x "$1"
-    chown "$REAL_USER" "$1"
-}
-
 # Xbox Cloud Gaming runs in Microsoft Edge (Flatpak), full screen on
 # xbox.com/play. Better xCloud, a userscript that adds controller options and
 # stream settings, is added once by hand with Tampermonkey: its own guide is
 # better-xcloud.github.io/chromium.
 XCLOUD_BROWSER=com.microsoft.Edge
 
-xcloud_write_files() {
-    cat > "$REAL_HOME/xbox-cloud-gaming.sh" << LAUNCH
+# write_edge_launcher FILE URL: a launcher that opens URL in Edge full screen.
+write_edge_launcher() {
+    cat > "$1" << LAUNCH
 #!/bin/sh
 # Started from the Steam library in game mode.
 unset LD_PRELOAD
-exec flatpak run $XCLOUD_BROWSER --kiosk --start-fullscreen --no-first-run https://www.xbox.com/play "\$@"
+exec flatpak run $XCLOUD_BROWSER --kiosk --start-fullscreen --no-first-run $2 "\$@"
 LAUNCH
-    chmod +x "$REAL_HOME/xbox-cloud-gaming.sh"
-    chown "$REAL_USER" "$REAL_HOME/xbox-cloud-gaming.sh"
+    chmod +x "$1"
+    chown "$REAL_USER" "$1"
     # Lets the browser's Gamepad API see Steam's virtual controller.
     flatpak override --filesystem=/run/udev:ro "$XCLOUD_BROWSER" 2>/dev/null || true
 }
 
+# edge_ensure: Microsoft Edge from Flathub, installed if missing.
+edge_ensure() {
+    flatpak_has "$XCLOUD_BROWSER" && return 0
+    pacman -S --needed --noconfirm flatpak
+    flatpak remote-add --if-not-exists flathub \
+        https://dl.flathub.org/repo/flathub.flatpakrepo
+    flatpak install -y --noninteractive flathub "$XCLOUD_BROWSER" || {
+        warn "Couldn't install Microsoft Edge from Flathub"
+        return 1
+    }
+}
+
+xcloud_write_files() {
+    write_edge_launcher "$REAL_HOME/xbox-cloud-gaming.sh" https://www.xbox.com/play
+}
+
 xcloud_install() {
     say "Xbox Cloud Gaming (Edge)"
-    if ! flatpak_has "$XCLOUD_BROWSER"; then
-        pacman -S --needed --noconfirm flatpak
-        flatpak remote-add --if-not-exists flathub \
-            https://dl.flathub.org/repo/flathub.flatpakrepo
-        flatpak install -y --noninteractive flathub "$XCLOUD_BROWSER" || {
-            warn "Couldn't install Microsoft Edge from Flathub"
-            return 1
-        }
-    fi
+    edge_ensure || return 1
     xcloud_write_files
     mark xcloud
     say "Done. System Updates adds \"Xbox Cloud Gaming\" to your Steam library"
@@ -1302,26 +1296,24 @@ xcloud_revert() {
     say "Removed. System Updates takes the shortcut out of Steam."
 }
 
+# GeForce NOW's own Linux app needs a Vulkan video-decode queue, which the
+# BC-250 GPU does not have (it stops with error 0xC0F11312), so it runs in
+# Edge at play.geforcenow.com instead, decoding video on the CPU.
 gfn_install() {
-    say "GeForce NOW"
-    if ! flatpak_has "$GFN_APP"; then
-        warn "GeForce NOW isn't installed. NVIDIA ships the Linux app itself:"
-        warn "  download it from https://www.nvidia.com/geforce-now/download/"
-        warn "  (Linux), install it, then pick this option again."
-        return 1
-    fi
-    write_flatpak_launcher "$REAL_HOME/geforce-now.sh" "$GFN_APP"
+    say "GeForce NOW (Edge)"
+    edge_ensure || return 1
+    write_edge_launcher "$REAL_HOME/geforce-now.sh" https://play.geforcenow.com
     mark gfn
     say "Done. System Updates adds \"GeForce NOW\" to your Steam library"
-    say "within a few seconds in game mode."
+    say "within a few seconds in game mode. Sign in with your NVIDIA account"
+    say "the first time. Video is decoded by the CPU on this board."
 }
 
 gfn_revert() {
     say "Removing GeForce NOW from Steam"
     rm -f "$REAL_HOME/geforce-now.sh"
     unmark gfn
-    say "Removed. The GeForce NOW app itself stays installed; System Updates"
-    say "takes the shortcut out of Steam."
+    say "Removed. System Updates takes the shortcut out of Steam."
 }
 
 discord_install() {
@@ -2553,9 +2545,9 @@ show_status() {
     echo
     item 6 "Apps: GeForce NOW" "$(status gfn)"
     _w=no; is_done gfn && _w=yes
-    if flatpak_has "$GFN_APP"; then _ok "GeForce NOW app" "installed"
-    elif [ "$_w" = yes ]; then _bad "GeForce NOW app" "not installed"
-    else _none "GeForce NOW app" "not installed"; fi
+    if flatpak_has "$XCLOUD_BROWSER"; then _ok "Edge (GeForce NOW)" "installed"
+    elif [ "$_w" = yes ]; then _bad "Edge (GeForce NOW)" "not installed"
+    else _none "Edge (GeForce NOW)" "not installed"; fi
     _file_line "launcher" "$REAL_HOME/geforce-now.sh" "$_w"
 
     # ---- 7. Control Center
@@ -2732,7 +2724,7 @@ refresh_installed() {
     if is_done guide; then guide_install || warn "guide refresh failed"; _did=1; fi
     if is_done atv;   then atv_write_files || warn "android tv refresh failed"; _did=1; fi
     if is_done xcloud; then xcloud_write_files; _did=1; fi
-    if is_done gfn;   then write_flatpak_launcher "$REAL_HOME/geforce-now.sh" "$GFN_APP"; _did=1; fi
+    if is_done gfn;   then write_edge_launcher "$REAL_HOME/geforce-now.sh" https://play.geforcenow.com; _did=1; fi
     # Boot loader updates can rewrite limine.conf.
     if is_done boot;  then boot_install  || warn "boot menu refresh failed"; _did=1; fi
     if is_done cecfix; then cecfix_install || warn "TV 4K fix not re-applied"; _did=1; fi
