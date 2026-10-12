@@ -201,10 +201,11 @@ The cloud gaming launchers clear `LD_PRELOAD` before starting the Flatpak, so
 Steam's overlay library doesn't get loaded into them.
 
 A shortcut System Updates creates also gets library art (capsule, wide capsule,
-hero, logo) and an icon: the top-rated art on SteamGridDB when an API key is
-available (the SteamGridDB Decky plugin's key is reused), otherwise drawn from the
-app's own icon. Shortcuts that already exist, and art you set yourself, are
-never changed.
+hero, logo) and an icon: the top-rated art on SteamGridDB when a free API key is
+entered in System Updates' settings (SteamGridDB key), otherwise drawn from the
+app's own icon. A "Fetch library art" button there redoes the art for shortcuts
+you already have. Shortcuts that already exist, and art you set yourself, are
+only changed by that button.
 
 #### Android TV (Waydroid)
 
