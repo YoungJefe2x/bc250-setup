@@ -1224,7 +1224,6 @@ atv_revert() {
 # Cloud gaming apps from Flatpak. Each gets a small launcher in the home
 # folder, which System Updates adds to the Steam library like Android TV.
 
-XCLOUD_APP=io.github.unknownskl.greenlight
 GFN_APP=com.nvidia.geforcenow
 
 # flatpak_has APP: installed system-wide or for the user.
@@ -1248,30 +1247,55 @@ LAUNCH
     chown "$REAL_USER" "$1"
 }
 
+# Xbox Cloud Gaming runs in Microsoft Edge (Flatpak), full screen on
+# xbox.com/play. Better xCloud, a userscript that adds controller options and
+# stream settings, is added once by hand with Tampermonkey: its own guide is
+# better-xcloud.github.io/chromium.
+XCLOUD_BROWSER=com.microsoft.Edge
+
+xcloud_write_files() {
+    cat > "$REAL_HOME/xbox-cloud-gaming.sh" << LAUNCH
+#!/bin/sh
+# Started from the Steam library in game mode.
+unset LD_PRELOAD
+exec flatpak run $XCLOUD_BROWSER --kiosk --start-fullscreen --no-first-run https://www.xbox.com/play "\$@"
+LAUNCH
+    chmod +x "$REAL_HOME/xbox-cloud-gaming.sh"
+    chown "$REAL_USER" "$REAL_HOME/xbox-cloud-gaming.sh"
+    # Lets the browser's Gamepad API see Steam's virtual controller.
+    flatpak override --filesystem=/run/udev:ro "$XCLOUD_BROWSER" 2>/dev/null || true
+}
+
 xcloud_install() {
-    say "Xbox Cloud Gaming (Greenlight)"
-    if ! flatpak_has "$XCLOUD_APP"; then
+    say "Xbox Cloud Gaming (Edge)"
+    if ! flatpak_has "$XCLOUD_BROWSER"; then
         pacman -S --needed --noconfirm flatpak
         flatpak remote-add --if-not-exists flathub \
             https://dl.flathub.org/repo/flathub.flatpakrepo
-        flatpak install -y --noninteractive flathub "$XCLOUD_APP" || {
-            warn "Couldn't install Greenlight from Flathub"
+        flatpak install -y --noninteractive flathub "$XCLOUD_BROWSER" || {
+            warn "Couldn't install Microsoft Edge from Flathub"
             return 1
         }
     fi
-    write_flatpak_launcher "$REAL_HOME/xbox-cloud-gaming.sh" "$XCLOUD_APP"
+    xcloud_write_files
     mark xcloud
     say "Done. System Updates adds \"Xbox Cloud Gaming\" to your Steam library"
     say "within a few seconds in game mode. Sign in with your Microsoft account"
-    say "the first time; Game Pass Ultimate is needed to play."
+    say "once at xbox.com/play; Game Pass Ultimate is needed to play."
+    say ""
+    say "For Better xCloud's controller-friendly menus, once, in desktop mode:"
+    say "  1. Open Edge, go to edge://extensions and turn on Developer mode."
+    say "  2. Add Tampermonkey from the Chrome Web Store."
+    say "  3. Open https://github.com/redphx/better-xcloud/releases/latest/download/better-xcloud.user.js"
+    say "     and press Install."
 }
 
 xcloud_revert() {
     say "Removing Xbox Cloud Gaming"
     rm -f "$REAL_HOME/xbox-cloud-gaming.sh"
-    if flatpak_has "$XCLOUD_APP" && confirm "Uninstall the Greenlight app too?"; then
-        flatpak uninstall -y --noninteractive "$XCLOUD_APP" 2>/dev/null ||
-            runuser -u "$REAL_USER" -- flatpak uninstall -y --noninteractive "$XCLOUD_APP" ||
+    if flatpak_has "$XCLOUD_BROWSER" && confirm "Uninstall Microsoft Edge too?"; then
+        flatpak uninstall -y --noninteractive "$XCLOUD_BROWSER" 2>/dev/null ||
+            runuser -u "$REAL_USER" -- flatpak uninstall -y --noninteractive "$XCLOUD_BROWSER" ||
             warn "uninstall failed"
     fi
     unmark xcloud
@@ -2522,9 +2546,9 @@ show_status() {
     echo
     item 6 "Apps: Xbox Cloud Gaming" "$(status xcloud)"
     _w=no; is_done xcloud && _w=yes
-    if flatpak_has "$XCLOUD_APP"; then _ok "Greenlight" "installed"
-    elif [ "$_w" = yes ]; then _bad "Greenlight" "not installed"
-    else _none "Greenlight" "not installed"; fi
+    if flatpak_has "$XCLOUD_BROWSER"; then _ok "Edge (Xbox Cloud Gaming)" "installed"
+    elif [ "$_w" = yes ]; then _bad "Edge (Xbox Cloud Gaming)" "not installed"
+    else _none "Edge (Xbox Cloud Gaming)" "not installed"; fi
     _file_line "launcher" "$REAL_HOME/xbox-cloud-gaming.sh" "$_w"
     echo
     item 6 "Apps: GeForce NOW" "$(status gfn)"
@@ -2707,7 +2731,7 @@ refresh_installed() {
     if is_done power; then power_install || warn "power refresh failed"; _did=1; fi
     if is_done guide; then guide_install || warn "guide refresh failed"; _did=1; fi
     if is_done atv;   then atv_write_files || warn "android tv refresh failed"; _did=1; fi
-    if is_done xcloud; then write_flatpak_launcher "$REAL_HOME/xbox-cloud-gaming.sh" "$XCLOUD_APP"; _did=1; fi
+    if is_done xcloud; then xcloud_write_files; _did=1; fi
     if is_done gfn;   then write_flatpak_launcher "$REAL_HOME/geforce-now.sh" "$GFN_APP"; _did=1; fi
     # Boot loader updates can rewrite limine.conf.
     if is_done boot;  then boot_install  || warn "boot menu refresh failed"; _did=1; fi
