@@ -193,7 +193,7 @@ again when the app is removed here):
 | App | How |
 |---|---|
 | Android TV | Waydroid, below |
-| Xbox Cloud Gaming | [Greenlight](https://github.com/unknownskl/greenlight) from Flathub, launched by `~/xbox-cloud-gaming.sh` |
+| Xbox Cloud Gaming | Microsoft Edge (Flatpak) full screen on xbox.com/play, launched by `~/xbox-cloud-gaming.sh`. Add [Better xCloud](https://better-xcloud.github.io/chromium/) once in desktop mode (Tampermonkey plus its userscript) for controller-friendly menus |
 | GeForce NOW | NVIDIA's own Linux app (Flatpak `com.nvidia.geforcenow`), launched by `~/geforce-now.sh`. Install it from NVIDIA first; this only adds it to Steam |
 | Discord | Whichever Discord client is installed (Arch's `discord` if none), launched by `~/discord.sh` |
 
