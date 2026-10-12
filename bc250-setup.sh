@@ -1238,13 +1238,67 @@ flatpak_has() {
 # better-xcloud.github.io/chromium.
 XCLOUD_BROWSER=com.microsoft.Edge
 
+EDGE_CHORD_DIR="$REAL_HOME/.var/app/$XCLOUD_BROWSER/gamepad-chord"
+
+# write_edge_chord: an Edge add-on, loaded by the launchers, that reports View
+# and Menu pressed together as the Xbox button on xbox.com and GeForce NOW,
+# since Steam keeps the Xbox button for itself in game mode.
+write_edge_chord() {
+    mkdir -p "$EDGE_CHORD_DIR"
+    cat > "$EDGE_CHORD_DIR/manifest.json" << 'CHORD'
+{
+  "manifest_version": 3,
+  "name": "Guide button chord",
+  "version": "1.0",
+  "description": "View + Menu together act as the Xbox button.",
+  "content_scripts": [{
+    "matches": ["https://play.geforcenow.com/*", "https://www.xbox.com/*"],
+    "js": ["chord.js"],
+    "run_at": "document_start",
+    "all_frames": true,
+    "world": "MAIN"
+  }]
+}
+CHORD
+    cat > "$EDGE_CHORD_DIR/chord.js" << 'CHORD'
+// Steam keeps the Xbox button for itself in game mode, so pressing View and
+// Menu together is reported to the page as the Xbox (guide) button instead.
+(() => {
+  const real = navigator.getGamepads.bind(navigator);
+  const VIEW = 8, MENU = 9, GUIDE = 16;
+  const btn = (pressed) => ({ pressed, touched: pressed, value: pressed ? 1 : 0 });
+  navigator.getGamepads = function () {
+    return Array.from(real(), (pad) => {
+      if (!pad || pad.buttons.length <= MENU) return pad;
+      const buttons = Array.from(pad.buttons, (b) => ({ pressed: b.pressed, touched: b.touched, value: b.value }));
+      while (buttons.length <= GUIDE) buttons.push(btn(false));
+      if (buttons[VIEW].pressed && buttons[MENU].pressed) {
+        buttons[VIEW] = btn(false);
+        buttons[MENU] = btn(false);
+        buttons[GUIDE] = btn(true);
+      }
+      return {
+        id: pad.id, index: pad.index, connected: pad.connected,
+        timestamp: pad.timestamp, mapping: pad.mapping, axes: pad.axes,
+        buttons, vibrationActuator: pad.vibrationActuator,
+      };
+    });
+  };
+  navigator.getGamepads.toString = () => 'function getGamepads() { [native code] }';
+})();
+CHORD
+    chown "$REAL_USER" "$REAL_HOME/.var" "$REAL_HOME/.var/app" "$REAL_HOME/.var/app/$XCLOUD_BROWSER"
+    chown -R "$REAL_USER" "$EDGE_CHORD_DIR"
+}
+
 # write_edge_launcher FILE URL: a launcher that opens URL in Edge full screen.
 write_edge_launcher() {
+    write_edge_chord
     cat > "$1" << LAUNCH
 #!/bin/sh
 # Started from the Steam library in game mode.
 unset LD_PRELOAD
-exec flatpak run $XCLOUD_BROWSER --kiosk --start-fullscreen --no-first-run $2 "\$@"
+exec flatpak run $XCLOUD_BROWSER --kiosk --start-fullscreen --no-first-run --load-extension=$EDGE_CHORD_DIR $2 "\$@"
 LAUNCH
     chmod +x "$1"
     chown "$REAL_USER" "$1"
