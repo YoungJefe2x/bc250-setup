@@ -19,6 +19,7 @@ sudo sh bc250-setup.sh
   7) BC-250 Control Center   [not installed]
   8) Quick, quiet boot menu  [not installed]
   9) Steam Link at 1080p     [not installed]
+  c) Claude Code (dev tools) [not installed]
 
   a) Install all
   s) Status — what is actually installed
@@ -265,6 +266,42 @@ and puts back any line it replaced; if the resolution was changed in Steam
 during the stream, it leaves the file alone. A stream cut off by a reboot is
 restored when the service next starts. Set `BC250_STREAM_MODE` in the unit
 to use a different mode.
+
+### c. Claude Code (dev tools)
+
+For working on this repo, or anything else, from desktop mode. Nothing here
+runs in game mode or at boot. Each item installs or removes on its own from
+the submenu, as your user rather than root:
+
+- **Claude Code**, with Anthropic's native installer
+  (`curl -fsSL https://claude.ai/install.sh | bash`). It updates itself. The
+  first `claude` opens a browser to sign in; it needs a Pro or Max plan.
+- **[Ponytail](https://github.com/DietrichGebert/ponytail)** and
+  **[i-have-adhd](https://github.com/ayghri/i-have-adhd)**, as Claude Code
+  plugins (`claude plugin marketplace add` + `claude plugin install`).
+  Ponytail keeps code changes small; i-have-adhd keeps answers short and
+  action-first (`/i-have-adhd`).
+- **[Graphify](https://github.com/Graphify-Labs/graphify)**, with
+  `uv tool install graphifyy` and `graphify install`. Run `/graphify .` in
+  Claude Code to build a map of a project. It logs queries to
+  `~/.cache/graphify-queries.log` unless `GRAPHIFY_QUERY_LOG_DISABLE=1`.
+- **[OmniRoute](https://github.com/diegosouzapw/OmniRoute)**, installed with
+  npm into `~/.local`. It never starts on its own. The `claude-omni` command
+  starts the server if it isn't running, opens Claude Code through it with
+  `omniroute run claude`, and stops the server when Claude Code exits, so it
+  only uses memory while you use it. Plain `claude` never goes through it.
+  Arguments pass through, e.g. `claude-omni --model openai/gpt-5.4`. Connect a
+  provider at `http://localhost:20128` the first time; your prompts go to
+  whichever providers you connect. The server log is
+  `~/.local/state/omniroute.log`.
+
+All of them put their commands in `~/.local/bin`, which is added to PATH
+with `~/.config/fish/conf.d/bc250-local-bin.fish` and two tagged lines at the
+end of `~/.bashrc`. Those are removed with the last dev tool. Removing Claude
+Code leaves `~/.claude` (settings, plugins, history) in place.
+
+The BC-250's 16 GB is shared with the GPU, so quit games before long
+Claude Code sessions.
 
 ## Status
 

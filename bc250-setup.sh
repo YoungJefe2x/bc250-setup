@@ -13,6 +13,8 @@
 #           and JDownloader 2, each added to the Steam library
 #   ctlcenter  BC-250 Control Center (AUR) — GPU/CPU/fan tuning
 #   streamres  Steam Link streams at 1080p so they show the whole screen
+#   dev     Claude Code, its Ponytail and i-have-adhd plugins, Graphify and
+#           OmniRoute (started only by the claude-omni command), for desktop mode
 #
 # Every component can be installed and reverted independently. What has been
 # installed is recorded under /var/lib/bc250-setup so revert knows what to undo.
@@ -1796,6 +1798,314 @@ boot_revert() {
     say "Restored."
 }
 
+# ============================================================== DEV TOOLS ===
+
+# Claude Code plus a few add-ons, for working on this repo (or anything else)
+# from desktop mode. Nothing here runs in game mode. Everything is installed
+# into the user's home as the user: the Claude Code installer, npm and uv all
+# put their launchers in ~/.local/bin, which is added to PATH for bash and fish.
+DEV_BIN="$REAL_HOME/.local/bin"
+DEV_FISH_PATH="$REAL_HOME/.config/fish/conf.d/bc250-local-bin.fish"
+DEV_BASH_TAG="# bc250-setup: ~/.local/bin on PATH"
+OMNI_WRAPPER="$DEV_BIN/claude-omni"
+OMNI_PORT=20128
+
+# Run a command as the invoking user, with their own HOME (sudo leaves it at
+# /root) and ~/.local/bin first on PATH.
+as_user() {
+    runuser -u "$REAL_USER" -- env HOME="$REAL_HOME" USER="$REAL_USER" \
+        PATH="$DEV_BIN:/usr/local/bin:/usr/bin:/bin" "$@"
+}
+
+dev_need_user() {
+    if [ "$REAL_USER" = "root" ]; then
+        warn "These install into your home directory, not root's."
+        warn "Run this script with sudo from your normal account, not a root shell."
+        return 1
+    fi
+}
+
+dev_any_installed() {
+    for _d in claudecode ponytail adhd graphify omniroute; do
+        is_done "$_d" && return 0
+    done
+    return 1
+}
+
+# ~/.local/bin on PATH for new terminals. fish gets a conf.d file of its own;
+# bash gets two tagged lines at the end of ~/.bashrc. Both are removed again
+# when the last dev tool is.
+dev_path_setup() {
+    as_user mkdir -p "$(dirname "$DEV_FISH_PATH")"
+    as_user sh -c 'printf "%s\n" "$1" "fish_add_path -g ~/.local/bin" > "$2"' \
+        _ "$DEV_BASH_TAG" "$DEV_FISH_PATH"
+    if [ -f "$REAL_HOME/.bashrc" ] && ! grep -qxF "$DEV_BASH_TAG" "$REAL_HOME/.bashrc"; then
+        printf '%s\n%s\n' "$DEV_BASH_TAG" \
+            'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac' \
+            >> "$REAL_HOME/.bashrc"
+    fi
+}
+
+dev_path_revert() {
+    dev_any_installed && return 0
+    rm -f "$DEV_FISH_PATH"
+    if [ -f "$REAL_HOME/.bashrc" ]; then
+        sed -i '\|^# bc250-setup: ~/.local/bin on PATH$|,+1d' "$REAL_HOME/.bashrc"
+    fi
+}
+
+# --- Claude Code
+
+claudecode_install() {
+    say "Claude Code"
+    dev_need_user || return 1
+    pacman -S --needed --noconfirm bash curl git || return 1
+    if [ -x "$DEV_BIN/claude" ]; then
+        say "Already installed ($(as_user claude --version 2>/dev/null || echo 'version unknown'))."
+        say "It keeps itself up to date."
+    elif ! as_user bash -c 'curl -fsSL https://claude.ai/install.sh | bash'; then
+        warn "Claude Code install failed. Try it by hand to see the error:"
+        warn "  curl -fsSL https://claude.ai/install.sh | bash"
+        return 1
+    fi
+    dev_path_setup
+    mark claudecode
+    say "Done. In desktop mode, open a new terminal, go to a project and run: claude"
+    say "The first start opens a browser to sign in (needs a Pro or Max plan)."
+}
+
+claudecode_revert() {
+    say "Removing Claude Code"
+    rm -f "$DEV_BIN/claude"
+    rm -rf "$REAL_HOME/.local/share/claude"
+    unmark claudecode
+    # The plugins live inside Claude Code's settings, so they go with it.
+    unmark ponytail
+    unmark adhd
+    dev_path_revert
+    say "Removed. Settings, plugins and history in ~/.claude are left alone;"
+    say "delete ~/.claude and ~/.claude.json too to wipe them."
+}
+
+# --- Claude Code plugins: marker, label, GitHub repo, plugin@marketplace
+
+claude_plugin_install() {
+    say "$2 (Claude Code plugin)"
+    dev_need_user || return 1
+    if [ ! -x "$DEV_BIN/claude" ]; then
+        warn "Install Claude Code (option 1) first."
+        return 1
+    fi
+    # Adding a marketplace that is already there is not an error worth stopping on.
+    as_user claude plugin marketplace add "$3" ||
+        warn "adding the $3 marketplace reported an error (already added?)"
+    if ! as_user claude plugin install "$4"; then
+        warn "$2 install failed. Try it by hand to see the error:"
+        warn "  claude plugin marketplace add $3"
+        warn "  claude plugin install $4"
+        return 1
+    fi
+    mark "$1"
+    say "Done. Restart any Claude Code session that is already open to load it."
+}
+
+claude_plugin_revert() {
+    say "Removing $2"
+    if [ -x "$DEV_BIN/claude" ]; then
+        as_user claude plugin uninstall "$4" ||
+            warn "could not uninstall $4; try: claude plugin uninstall $4"
+        as_user claude plugin marketplace remove "${4#*@}" 2>/dev/null || true
+    fi
+    unmark "$1"
+    say "Removed."
+}
+
+ponytail_install() {
+    claude_plugin_install ponytail "Ponytail" DietrichGebert/ponytail ponytail@ponytail || return 1
+    say "Commands: /ponytail-review, /ponytail-audit, /ponytail-debt, /ponytail-help."
+}
+ponytail_revert() { claude_plugin_revert ponytail "Ponytail" DietrichGebert/ponytail ponytail@ponytail; }
+
+adhd_install() {
+    claude_plugin_install adhd "i-have-adhd" ayghri/i-have-adhd i-have-adhd@i-have-adhd || return 1
+    say "Type /i-have-adhd in Claude Code to use it."
+}
+adhd_revert() { claude_plugin_revert adhd "i-have-adhd" ayghri/i-have-adhd i-have-adhd@i-have-adhd; }
+
+# --- Graphify: a code map Claude can search instead of reading every file
+
+graphify_install() {
+    say "Graphify"
+    dev_need_user || return 1
+    pacman -S --needed --noconfirm uv || return 1
+    # The PyPI name has two y's; other graphify* packages are not this project.
+    if ! as_user uv tool install graphifyy; then
+        warn "Graphify install failed. Try it by hand: uv tool install graphifyy"
+        return 1
+    fi
+    dev_path_setup
+    if [ -x "$DEV_BIN/claude" ]; then
+        as_user graphify install ||
+            warn "could not register the skill with Claude Code; run: graphify install"
+    else
+        warn "Claude Code isn't installed yet. After installing it, run: graphify install"
+    fi
+    mark graphify
+    say "Done. Inside Claude Code, in a project folder: /graphify ."
+    say "It logs your questions to ~/.cache/graphify-queries.log;"
+    say "set GRAPHIFY_QUERY_LOG_DISABLE=1 to stop that."
+}
+
+graphify_revert() {
+    say "Removing Graphify"
+    as_user uv tool uninstall graphifyy 2>/dev/null ||
+        warn "graphifyy was not installed with uv"
+    unmark graphify
+    dev_path_revert
+    say "Removed. The skill it registered with Claude Code and any graphify-out/"
+    say "folders in your projects are left alone."
+}
+
+# --- OmniRoute: only runs while claude-omni is open
+
+omni_write_wrapper() {
+    as_user mkdir -p "$DEV_BIN"
+    cat > "$OMNI_WRAPPER" << 'OMNI'
+#!/bin/sh
+# claude-omni: Claude Code through OmniRoute, for this session only.
+# Starts the OmniRoute server if it isn't running, opens Claude Code through
+# it, and stops the server again when Claude Code exits. A plain `claude`
+# never goes through OmniRoute. Written by bc250-setup.sh.
+#
+#   claude-omni                         default model
+#   claude-omni --model openai/gpt-5.4  pick one
+PORT=20128
+LOG="${XDG_STATE_HOME:-$HOME/.local/state}/omniroute.log"
+
+up() { curl -s -o /dev/null "http://localhost:$PORT/"; }
+
+if ! up; then
+    mkdir -p "$(dirname "$LOG")"
+    echo "Starting OmniRoute (log: $LOG)"
+    omniroute > "$LOG" 2>&1 &
+    pid=$!
+    # Stop it on the way out. Ctrl+C inside Claude Code must not kill the
+    # server mid-session, so INT gets a no-op handler rather than the default.
+    trap 'kill "$pid" 2>/dev/null' EXIT
+    trap 'exit 1' TERM HUP
+    trap ':' INT
+    i=0
+    until up; do
+        i=$((i + 1))
+        if [ "$i" -gt 30 ] || ! kill -0 "$pid" 2>/dev/null; then
+            echo "OmniRoute didn't start. Last lines of $LOG:" >&2
+            tail -n 20 "$LOG" >&2
+            exit 1
+        fi
+        sleep 1
+    done
+fi
+echo "OmniRoute dashboard: http://localhost:$PORT (connect a provider there first)"
+omniroute run claude "$@"
+OMNI
+    chmod 755 "$OMNI_WRAPPER"
+    chown "$REAL_USER" "$OMNI_WRAPPER"
+}
+
+omniroute_install() {
+    say "OmniRoute (runs only while you use it)"
+    dev_need_user || return 1
+    pacman -S --needed --noconfirm nodejs npm curl || return 1
+    # Into ~/.local as the user, not a root-owned global npm install.
+    if ! as_user npm install -g --prefix "$REAL_HOME/.local" omniroute; then
+        warn "OmniRoute install failed. Try it by hand:"
+        warn "  npm install -g --prefix ~/.local omniroute"
+        return 1
+    fi
+    omni_write_wrapper
+    dev_path_setup
+    mark omniroute
+    say "Done. Nothing starts at boot. When you want it, in a terminal run:"
+    say "  claude-omni"
+    say "It starts OmniRoute, opens Claude Code through it, and stops OmniRoute"
+    say "when you quit. Plain \`claude\` keeps going straight to Claude."
+    say "First time: open http://localhost:$OMNI_PORT while it runs and connect a provider."
+    say "Your prompts go to whichever providers you connect there."
+}
+
+omniroute_revert() {
+    say "Removing OmniRoute"
+    rm -f "$OMNI_WRAPPER"
+    as_user npm uninstall -g --prefix "$REAL_HOME/.local" omniroute 2>/dev/null ||
+        warn "could not uninstall omniroute; try: npm uninstall -g --prefix ~/.local omniroute"
+    unmark omniroute
+    dev_path_revert
+    say "Removed. Provider keys OmniRoute saved in your home are left alone."
+}
+
+# --- Menu
+
+# Summary for the main menu line.
+dev_status() {
+    _n=0
+    for _d in claudecode ponytail adhd graphify omniroute; do is_done "$_d" && _n=$((_n + 1)); done
+    if [ "$_n" -gt 0 ]; then printf '%s%s %s of 5 installed%s' "$C_GREEN" "$G_ON" "$_n" "$C_RESET"
+    else printf '%s%s not installed%s' "$C_DIM" "$G_OFF" "$C_RESET"; fi
+}
+
+dev_menu() {
+    while :; do
+        header "claude code (dev tools)"
+        printf '  %sFor desktop mode. Pick an installed one to remove it.%s\n\n' "$C_DIM" "$C_RESET"
+        item 1 "Claude Code"              "$(status claudecode)"
+        item 2 "Ponytail plugin"          "$(status ponytail)"
+        item 3 "i-have-adhd plugin"       "$(status adhd)"
+        item 4 "Graphify"                 "$(status graphify)"
+        item 5 "OmniRoute (claude-omni)"  "$(status omniroute)"
+        echo
+        item b "Back"
+        printf '\n  %sChoice:%s ' "$C_CYAN" "$C_RESET"
+        read -r c
+        case "$c" in
+            1) if is_done claudecode; then
+                   if confirm "Remove Claude Code?"; then claudecode_revert || true; fi
+               else claudecode_install || true; fi
+               pause ;;
+            2) if is_done ponytail; then
+                   if confirm "Remove Ponytail?"; then ponytail_revert || true; fi
+               else ponytail_install || true; fi
+               pause ;;
+            3) if is_done adhd; then
+                   if confirm "Remove i-have-adhd?"; then adhd_revert || true; fi
+               else adhd_install || true; fi
+               pause ;;
+            4) if is_done graphify; then
+                   if confirm "Remove Graphify?"; then graphify_revert || true; fi
+               else graphify_install || true; fi
+               pause ;;
+            5) if is_done omniroute; then
+                   if confirm "Remove OmniRoute?"; then omniroute_revert || true; fi
+               else
+                   say "OmniRoute sends Claude Code's requests to other AI providers you"
+                   say "connect (many are free tiers with their own terms). It only runs"
+                   say "while you use the claude-omni command."
+                   if confirm "Install it?"; then omniroute_install || true; fi
+               fi
+               pause ;;
+            b|B) return ;;
+            *) warn "no such option"; sleep 1 ;;
+        esac
+    done
+}
+
+dev_revert_all() {
+    if is_done omniroute;  then omniroute_revert  || true; fi
+    if is_done graphify;   then graphify_revert   || true; fi
+    if is_done adhd;       then adhd_revert       || true; fi
+    if is_done ponytail;   then ponytail_revert   || true; fi
+    if is_done claudecode; then claudecode_revert || true; fi
+}
+
 # ============================================================ EXPERIMENTS ===
 # Trial fixes, kept apart so they're easy to take back out.
 
@@ -2830,6 +3140,33 @@ show_status() {
     _file_line "bc250-stream-res" "$STREAMRES_BIN" "$_w"
     _file_line "user unit" "$STREAMRES_UNIT" "$_w"
 
+    # ---- c. Claude Code (dev tools)
+    echo
+    item c "Claude Code (dev tools)" "$(dev_status)"
+    _w=no; is_done claudecode && _w=yes
+    if [ -x "$DEV_BIN/claude" ]; then
+        _ok "claude" "$(as_user claude --version 2>/dev/null | head -n 1)"
+    elif [ "$_w" = yes ]; then _bad "claude" "missing: $DEV_BIN/claude"
+    else _none "claude" "not installed"; fi
+    if is_done ponytail || is_done adhd; then
+        _plugins=$(as_user claude plugin list 2>/dev/null) || _plugins=""
+        for _pp in ponytail:ponytail adhd:i-have-adhd; do
+            _pm=${_pp%%:*}; _pn=${_pp#*:}
+            is_done "$_pm" || continue
+            if printf '%s\n' "$_plugins" | grep -q "$_pn"; then _ok "$_pn" "plugin installed"
+            else _bad "$_pn" "not in claude plugin list"; fi
+        done
+    fi
+    _w=no; is_done graphify && _w=yes
+    if [ -x "$DEV_BIN/graphify" ]; then _ok "graphify" "installed"
+    elif [ "$_w" = yes ]; then _bad "graphify" "missing: $DEV_BIN/graphify"
+    else _none "graphify" "not installed"; fi
+    _w=no; is_done omniroute && _w=yes
+    if [ -x "$DEV_BIN/omniroute" ]; then _ok "omniroute" "installed, starts only with claude-omni"
+    elif [ "$_w" = yes ]; then _bad "omniroute" "missing: $DEV_BIN/omniroute"
+    else _none "omniroute" "not installed"; fi
+    _file_line "claude-omni" "$OMNI_WRAPPER" "$_w"
+
     # ---- x. Experiments
     echo
     item x "TV 4K fix (experiment)" "$(status cecfix)"
@@ -2984,6 +3321,7 @@ refresh_installed() {
     if is_done boot;  then boot_install  || warn "boot menu refresh failed"; _did=1; fi
     if is_done streamres; then streamres_write_files; _did=1; fi
     if is_done cecfix; then cecfix_install || warn "TV 4K fix not re-applied"; _did=1; fi
+    if is_done omniroute; then omni_write_wrapper; _did=1; fi
     # Plugins updated outside this script may need packages they didn't before.
     for _p in $EMBEDDED_PLUGINS; do
         if [ -d "$DECKY_DIR/$_p" ]; then
@@ -3038,6 +3376,7 @@ revert_menu() {
         item 7 "BC-250 Control Center"   "$(status ctlcenter)"
         item 8 "Quick, quiet boot menu"  "$(status boot)"
         item 9 "Steam Link at 1080p"     "$(status streamres)"
+        item c "Claude Code (dev tools)" "$(dev_status)"
         echo
         item 0 "Revert everything"
         item b "Back"
@@ -3053,7 +3392,9 @@ revert_menu() {
             7) ctlcenter_revert || true; pause ;;
             8) boot_revert  || true; pause ;;
             9) streamres_revert || true; pause ;;
+            c|C) dev_menu ;;
             0) if confirm "Revert everything?"; then
+                   dev_revert_all
                    if is_done streamres; then streamres_revert || true; fi
                    if is_done cecfix; then cecfix_revert || true; fi
                    boot_revert  || true
@@ -3100,6 +3441,7 @@ main_menu() {
         item 7 "BC-250 Control Center"   "$(status ctlcenter)"
         item 8 "Quick, quiet boot menu"  "$(status boot)"
         item 9 "Steam Link at 1080p"     "$(status streamres)"
+        item c "Claude Code (dev tools)" "$(dev_status)"
         item x "Experiments"             "$(status cecfix)"
         rule
         item a "Install all"
@@ -3120,6 +3462,7 @@ main_menu() {
             7) ctlcenter_install || true; pause ;;
             8) boot_install || true; pause ;;
             9) streamres_install || true; pause ;;
+            c|C) dev_menu ;;
             x|X) experiments_menu ;;
             a|A) install_all; pause ;;
             s|S) show_status || true; pause ;;
