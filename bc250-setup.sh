@@ -9,8 +9,8 @@
 #   power   disable sleep/suspend; power button = shutdown
 #   guide   controller guide button switches the TV to this input
 #   decky   Decky plugins installed from local zip files
-#   apps    Android TV (Waydroid), Xbox Cloud Gaming and GeForce NOW,
-#           each added to the Steam library
+#   apps    Android TV (Waydroid), Xbox Cloud Gaming, GeForce NOW, Discord
+#           and JDownloader 2, each added to the Steam library
 #   ctlcenter  BC-250 Control Center (AUR) — GPU/CPU/fan tuning
 #
 # Every component can be installed and reverted independently. What has been
@@ -1406,11 +1406,58 @@ discord_revert() {
     say "takes the shortcut out of Steam."
 }
 
+# JDownloader 2 (Flatpak). It has no controller support of its own, so
+# System Updates gives its Steam shortcut a mouse-style layout: right stick
+# moves the pointer, triggers click, left stick scrolls.
+JD_APP=org.jdownloader.JDownloader
+
+jd_write_launcher() {
+    cat > "$REAL_HOME/jdownloader.sh" << LAUNCH
+#!/bin/sh
+# Started from the Steam library in game mode.
+# gamescope doesn't reparent windows; without this Java draws a blank window.
+exec flatpak run --env=_JAVA_AWT_WM_NONREPARENTING=1 $JD_APP "\$@"
+LAUNCH
+    chmod +x "$REAL_HOME/jdownloader.sh"
+    chown "$REAL_USER" "$REAL_HOME/jdownloader.sh"
+}
+
+jd_install() {
+    say "JDownloader 2"
+    if ! flatpak_has "$JD_APP"; then
+        command -v flatpak >/dev/null 2>&1 || pacman -S --needed --noconfirm flatpak || return 1
+        flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
+        flatpak install -y --noninteractive flathub "$JD_APP" || {
+            warn "JDownloader install failed"
+            return 1
+        }
+    fi
+    jd_write_launcher
+    mark jd
+    say "Done. System Updates adds \"JDownloader 2\" to your Steam library"
+    say "within a few seconds in game mode, with a mouse-style controller layout"
+    say "(reconnect the controller once if it still acts as a gamepad)."
+    say "The first start downloads JDownloader's own files, so give it a minute."
+    say "Downloads go to ~/Downloads."
+}
+
+jd_revert() {
+    say "Removing JDownloader 2 from Steam"
+    rm -f "$REAL_HOME/jdownloader.sh"
+    unmark jd
+    if flatpak_has "$JD_APP" && confirm "Uninstall JDownloader 2 too?"; then
+        flatpak uninstall -y --noninteractive "$JD_APP" 2>/dev/null ||
+            runuser -u "$REAL_USER" -- flatpak uninstall -y --noninteractive "$JD_APP" ||
+            warn "could not uninstall $JD_APP"
+    fi
+    say "Removed. System Updates takes the shortcut out of Steam."
+}
+
 # Summary for the main menu line.
 apps_status() {
     _n=0
-    for _a in atv xcloud gfn discord; do is_done "$_a" && _n=$((_n + 1)); done
-    if [ "$_n" -gt 0 ]; then printf '%s%s %s of 4 installed%s' "$C_GREEN" "$G_ON" "$_n" "$C_RESET"
+    for _a in atv xcloud gfn discord jd; do is_done "$_a" && _n=$((_n + 1)); done
+    if [ "$_n" -gt 0 ]; then printf '%s%s %s of 5 installed%s' "$C_GREEN" "$G_ON" "$_n" "$C_RESET"
     else printf '%s%s not installed%s' "$C_DIM" "$G_OFF" "$C_RESET"; fi
 }
 
@@ -1422,6 +1469,7 @@ apps_menu() {
         item 2 "Xbox Cloud Gaming"       "$(status xcloud)"
         item 3 "GeForce NOW"             "$(status gfn)"
         item 4 "Discord"                 "$(status discord)"
+        item 5 "JDownloader 2"           "$(status jd)"
         echo
         item b "Back"
         printf '\n  %sChoice:%s ' "$C_CYAN" "$C_RESET"
@@ -1442,6 +1490,10 @@ apps_menu() {
             4) if is_done discord; then
                    if confirm "Remove Discord from Steam?"; then discord_revert || true; fi
                else discord_install || true; fi
+               pause ;;
+            5) if is_done jd; then
+                   if confirm "Remove JDownloader 2 from Steam?"; then jd_revert || true; fi
+               else jd_install || true; fi
                pause ;;
             b|B) return ;;
             *) warn "no such option"; sleep 1 ;;
@@ -2603,6 +2655,13 @@ show_status() {
     elif [ "$_w" = yes ]; then _bad "Edge (GeForce NOW)" "not installed"
     else _none "Edge (GeForce NOW)" "not installed"; fi
     _file_line "launcher" "$REAL_HOME/geforce-now.sh" "$_w"
+    echo
+    item 6 "Apps: JDownloader 2" "$(status jd)"
+    _w=no; is_done jd && _w=yes
+    if flatpak_has "$JD_APP"; then _ok "JDownloader 2" "installed"
+    elif [ "$_w" = yes ]; then _bad "JDownloader 2" "not installed"
+    else _none "JDownloader 2" "not installed"; fi
+    _file_line "launcher" "$REAL_HOME/jdownloader.sh" "$_w"
 
     # ---- 7. Control Center
     echo
@@ -2779,6 +2838,7 @@ refresh_installed() {
     if is_done atv;   then atv_write_files || warn "android tv refresh failed"; _did=1; fi
     if is_done xcloud; then xcloud_write_files; _did=1; fi
     if is_done gfn;   then write_edge_launcher "$REAL_HOME/geforce-now.sh" https://play.geforcenow.com; _did=1; fi
+    if is_done jd;    then jd_write_launcher; _did=1; fi
     # Boot loader updates can rewrite limine.conf.
     if is_done boot;  then boot_install  || warn "boot menu refresh failed"; _did=1; fi
     if is_done cecfix; then cecfix_install || warn "TV 4K fix not re-applied"; _did=1; fi
@@ -2852,6 +2912,7 @@ revert_menu() {
                    if is_done cecfix; then cecfix_revert || true; fi
                    boot_revert  || true
                    ctlcenter_revert || true
+                   if is_done jd; then jd_revert || true; fi
                    if is_done gfn; then gfn_revert || true; fi
                    if is_done xcloud; then xcloud_revert || true; fi
                    atv_revert   || true

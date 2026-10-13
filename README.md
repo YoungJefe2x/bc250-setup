@@ -196,6 +196,7 @@ again when the app is removed here):
 | Xbox Cloud Gaming | Microsoft Edge (Flatpak) full screen on xbox.com/play, launched by `~/xbox-cloud-gaming.sh`. Add [Better xCloud](https://better-xcloud.github.io/chromium/) once in desktop mode (Tampermonkey plus its userscript) for controller-friendly menus |
 | GeForce NOW | Microsoft Edge (Flatpak) full screen on play.geforcenow.com, launched by `~/geforce-now.sh`. NVIDIA's own Linux app can't run on the BC-250 (it needs a Vulkan video-decode queue the GPU lacks), so video is decoded on the CPU |
 | Discord | Whichever Discord client is installed (Arch's `discord` if none), launched by `~/discord.sh` |
+| JDownloader 2 | JDownloader 2 (Flatpak), launched by `~/jdownloader.sh`. Its shortcut gets a mouse-style controller layout: right stick moves the pointer, right trigger or A/Cross clicks, left trigger right-clicks, left stick scrolls, B/Circle goes back, X/Square pastes links, Y/Triangle opens the keyboard |
 
 In Xbox Cloud Gaming and GeForce NOW, press View and Menu together for the Xbox button, since Steam keeps the real one for itself in game mode. A small Edge add-on that the launchers load handles this.
 
