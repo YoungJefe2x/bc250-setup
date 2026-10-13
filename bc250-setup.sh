@@ -12,6 +12,7 @@
 #   apps    Android TV (Waydroid), Xbox Cloud Gaming, GeForce NOW, Discord
 #           and JDownloader 2, each added to the Steam library
 #   ctlcenter  BC-250 Control Center (AUR) — GPU/CPU/fan tuning
+#   streamres  Steam Link streams at 1080p so they show the whole screen
 #
 # Every component can be installed and reverted independently. What has been
 # installed is recorded under /var/lib/bc250-setup so revert knows what to undo.
@@ -1501,6 +1502,139 @@ apps_menu() {
     done
 }
 
+# ======================================================== STEAM LINK RES ====
+
+# Steam Link / Remote Play asks for 1080p, and gamescope's capture crops a 4K
+# output to that size instead of scaling it, so the client only sees the
+# top-left quarter. This user service watches Steam's streaming log and puts
+# the TV output on 1080p for as long as a stream runs, then restores it.
+STREAMRES_BIN=/usr/local/bin/bc250-stream-res
+STREAMRES_UNIT=/etc/systemd/user/bc250-stream-res.service
+
+streamres_write_files() {
+    cat > "$STREAMRES_BIN" << 'SCRIPT'
+#!/bin/bash
+# Run the TV output at 1080p while a Steam Link / Remote Play stream is on.
+# gamescope reads the mode for each display from modes.cfg ("Make Model:WxH@Hz 0",
+# the same file Steam's Display > Resolution writes) when the nudge atom is set.
+LOG="$HOME/.steam/steam/logs/streaming_log.txt"
+MODES="$HOME/.config/gamescope/modes.cfg"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/bc250-stream-res"
+MODE="${BC250_STREAM_MODE:-1920x1080@60}"
+# A desktop stream stops and a game stream starts when a game launches, so
+# only go back to the TV's mode once nothing has restarted for this long.
+SETTLE=15
+
+nudge() {
+    xprop -display "${DISPLAY:-:0}" -root -f GAMESCOPE_DISPLAY_MODE_NUDGE 32c \
+        -set GAMESCOPE_DISPLAY_MODE_NUDGE 1 2>/dev/null
+}
+
+# "Make Model" exactly as gamescope keys modes.cfg.
+display_key() {
+    gamescopectl info 2>/dev/null | awk -F': ' '
+        /Display Make:/  { make = $2 }
+        /Display Model:/ { model = $2 }
+        END { if (make != "" && model != "") print make " " model }'
+}
+
+# State file: line 1 is the line we added, the rest are the lines it replaced.
+to_stream_mode() {
+    [ -e "$STATE" ] && return
+    key=$(display_key)
+    [ -n "$key" ] || return
+    ours="$key:$MODE 0"
+    mkdir -p "${STATE%/*}" "${MODES%/*}"
+    touch "$MODES"
+    grep -qxF -- "$ours" "$MODES" && return
+    { printf '%s\n' "$ours"; awk -v k="$key:" 'index($0, k) == 1' "$MODES"; } > "$STATE"
+    { awk -v k="$key:" 'index($0, k) != 1' "$MODES"; printf '%s\n' "$ours"; } > "$MODES.tmp" &&
+        mv "$MODES.tmp" "$MODES"
+    nudge
+}
+
+to_tv_mode() {
+    [ -e "$STATE" ] || return
+    ours=$(head -n 1 "$STATE")
+    # Leave the file alone if Steam's resolution picker changed it meanwhile.
+    if grep -qxF -- "$ours" "$MODES" 2>/dev/null; then
+        { grep -vxF -- "$ours" "$MODES"; tail -n +2 "$STATE"; } > "$MODES.tmp" &&
+            mv "$MODES.tmp" "$MODES"
+        nudge
+    fi
+    rm -f "$STATE"
+}
+
+# A stream cut off by a reboot or crash leaves the 1080p line behind.
+to_tv_mode
+
+pending=0
+while :; do
+    if [ "$pending" = 1 ]; then wait_s=$SETTLE; else wait_s=3600; fi
+    if IFS= read -r -t "$wait_s" line; then
+        case "$line" in
+            *"Streaming started to "*|*">>> Starting desktop stream"*|*">>> Starting game stream"*)
+                pending=0; to_stream_mode ;;
+            *">>> Stopped desktop stream"*|*">>> Stopped game stream"*)
+                pending=1 ;;
+        esac
+    elif [ $? -gt 128 ]; then
+        if [ "$pending" = 1 ]; then pending=0; to_tv_mode; fi
+    else
+        exit 1
+    fi
+done < <(tail -n 0 -F "$LOG" 2>/dev/null)
+SCRIPT
+    chmod +x "$STREAMRES_BIN"
+
+    cat > "$STREAMRES_UNIT" << 'UNIT'
+[Unit]
+Description=Steam Link streams at 1080p (TV mode restored afterwards)
+
+[Service]
+Type=simple
+Environment=DISPLAY=:0
+Environment=GAMESCOPE_WAYLAND_DISPLAY=gamescope-0
+ExecStart=/usr/local/bin/bc250-stream-res
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+UNIT
+}
+
+# systemctl --user for the desktop user, from this root shell.
+user_systemctl() {
+    _uid=$(id -u "$REAL_USER")
+    runuser -u "$REAL_USER" -- env XDG_RUNTIME_DIR="/run/user/$_uid" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$_uid/bus" systemctl --user "$@"
+}
+
+streamres_install() {
+    say "Steam Link at 1080p"
+    pacman -S --needed --noconfirm xorg-xprop || return 1
+    streamres_write_files
+    systemctl --global enable bc250-stream-res.service
+    user_systemctl daemon-reload 2>/dev/null || true
+    user_systemctl restart bc250-stream-res.service 2>/dev/null ||
+        warn "starts at your next login (check: systemctl --user status bc250-stream-res)"
+    mark streamres
+    say "Done. When Steam Link connects the TV output drops to 1080p so the"
+    say "stream shows the whole screen; it goes back about 15 seconds after"
+    say "the stream ends."
+}
+
+streamres_revert() {
+    say "Removing Steam Link at 1080p"
+    user_systemctl stop bc250-stream-res.service 2>/dev/null || true
+    systemctl --global disable bc250-stream-res.service 2>/dev/null || true
+    rm -f "$STREAMRES_UNIT" "$STREAMRES_BIN"
+    user_systemctl daemon-reload 2>/dev/null || true
+    unmark streamres
+    say "Removed."
+}
+
 # ========================================================= CONTROL CENTER ===
 
 # movacx/bc250-control-center — system monitoring, GPU/CPU tuning, CU and fan
@@ -2689,6 +2823,13 @@ show_status() {
         _none "limine.conf" "not found"
     fi
 
+    # ---- 9. Steam Link at 1080p
+    echo
+    item 9 "Steam Link at 1080p" "$(status streamres)"
+    _w=no; is_done streamres && _w=yes
+    _file_line "bc250-stream-res" "$STREAMRES_BIN" "$_w"
+    _file_line "user unit" "$STREAMRES_UNIT" "$_w"
+
     # ---- x. Experiments
     echo
     item x "TV 4K fix (experiment)" "$(status cecfix)"
@@ -2841,6 +2982,7 @@ refresh_installed() {
     if is_done jd;    then jd_write_launcher; _did=1; fi
     # Boot loader updates can rewrite limine.conf.
     if is_done boot;  then boot_install  || warn "boot menu refresh failed"; _did=1; fi
+    if is_done streamres; then streamres_write_files; _did=1; fi
     if is_done cecfix; then cecfix_install || warn "TV 4K fix not re-applied"; _did=1; fi
     # Plugins updated outside this script may need packages they didn't before.
     for _p in $EMBEDDED_PLUGINS; do
@@ -2877,6 +3019,7 @@ install_all() {
     guide_install || warn "guide failed"
     ctlcenter_install || warn "control center failed"
     boot_install  || warn "quick boot failed"
+    streamres_install || warn "steam link 1080p failed"
     atv_install   || warn "android tv failed"
     xcloud_install || warn "xbox cloud gaming failed"
     gfn_install   || warn "geforce now skipped"
@@ -2894,8 +3037,9 @@ revert_menu() {
         item 6 "Apps"                    "$(apps_status)"
         item 7 "BC-250 Control Center"   "$(status ctlcenter)"
         item 8 "Quick, quiet boot menu"  "$(status boot)"
+        item 9 "Steam Link at 1080p"     "$(status streamres)"
         echo
-        item 9 "Revert everything"
+        item 0 "Revert everything"
         item b "Back"
         printf '\n  %sChoice:%s ' "$C_CYAN" "$C_RESET"
         read -r c
@@ -2908,7 +3052,9 @@ revert_menu() {
             6) apps_menu ;;
             7) ctlcenter_revert || true; pause ;;
             8) boot_revert  || true; pause ;;
-            9) if confirm "Revert everything?"; then
+            9) streamres_revert || true; pause ;;
+            0) if confirm "Revert everything?"; then
+                   if is_done streamres; then streamres_revert || true; fi
                    if is_done cecfix; then cecfix_revert || true; fi
                    boot_revert  || true
                    ctlcenter_revert || true
@@ -2953,6 +3099,7 @@ main_menu() {
         item 6 "Apps"                    "$(apps_status)"
         item 7 "BC-250 Control Center"   "$(status ctlcenter)"
         item 8 "Quick, quiet boot menu"  "$(status boot)"
+        item 9 "Steam Link at 1080p"     "$(status streamres)"
         item x "Experiments"             "$(status cecfix)"
         rule
         item a "Install all"
@@ -2972,6 +3119,7 @@ main_menu() {
             6) apps_menu ;;
             7) ctlcenter_install || true; pause ;;
             8) boot_install || true; pause ;;
+            9) streamres_install || true; pause ;;
             x|X) experiments_menu ;;
             a|A) install_all; pause ;;
             s|S) show_status || true; pause ;;
