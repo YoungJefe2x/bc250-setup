@@ -17,6 +17,8 @@ sudo sh bc250-setup.sh
   5) Decky plugins           [not installed]
   6) Apps                    [not installed]
   7) BC-250 Control Center   [not installed]
+  8) Quick, quiet boot menu  [not installed]
+  9) Steam Link at 1080p     [not installed]
 
   a) Install all
   s) Status — what is actually installed
@@ -245,6 +247,24 @@ asks for a password partway through.
 After installing, launch it and choose **Prepare dependencies** on its
 dashboard — it detects the distro and pulls the governor, fan and CU tools
 itself. Revert removes the package but leaves those dependencies alone.
+
+### 9. Steam Link at 1080p
+
+Steam Link and Remote Play ask the box for a 1080p stream, and gamescope
+captures a 4K output by cropping it to that size rather than scaling it, so
+the client only sees the top-left quarter of the screen. This installs a
+user service, `bc250-stream-res`, that follows
+`~/.steam/steam/logs/streaming_log.txt`: when a stream starts it puts the TV
+output on 1920x1080, and about 15 seconds after the stream ends it restores
+the previous mode.
+
+It switches modes the same way Steam's Display → Resolution setting does,
+with a line for the display in `~/.config/gamescope/modes.cfg` followed by a
+`GAMESCOPE_DISPLAY_MODE_NUDGE`. On restore it removes only the line it added
+and puts back any line it replaced; if the resolution was changed in Steam
+during the stream, it leaves the file alone. A stream cut off by a reboot is
+restored when the service next starts. Set `BC250_STREAM_MODE` in the unit
+to use a different mode.
 
 ## Status
 
