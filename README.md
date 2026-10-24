@@ -119,7 +119,7 @@ it, pick an up-to-date one to remove it, or press `a` to install and update
 everything that needs it. Decky Loader is offered first if it's missing, and
 Decky restarts once when you leave the list if anything changed.
 
-Four plugins are embedded in the script as base64 — no separate files
+Five plugins are embedded in the script as base64 — no separate files
 needed:
 
 | Plugin | What it does |
@@ -128,6 +128,7 @@ needed:
 | System Updates | CachyOS updates and notifications from game mode |
 | Discord Deck | Voice channels, audio device switching, speaking indicators |
 | CEC Remote | TV/soundbar volume and mute, TV power, switch the TV to this box |
+| BC-250 Performance | SMT (hyperthreading) on/off and CPU performance mode on/off; both kept across reboots |
 
 One more plugin that isn't in the Decky store is downloaded from its own
 GitHub releases at install time, so you always get the newest one:
@@ -166,6 +167,13 @@ It does the same for this script: every run records where the script lives in
 the repo copy and offers an "Update setup tool" button (keeps a `.bak`, then
 flags the next run to re-apply installed components, as `u` does). A copy
 inside a git checkout is left to `git pull`.
+
+BC-250 Performance turns SMT off or on through
+`/sys/devices/system/cpu/smt/control` (6 cores / 6 threads or 6 cores / 12
+threads, no reboot) and performance mode sets every CPU's cpufreq governor to
+`performance`, putting back the previous governor when it's turned off. The
+GPU is left to oberon-governor. Both settings are applied again each time
+Decky starts; remove the plugin and reboot to get the kernel defaults back.
 
 No credentials are baked in. Discord Deck stores its client ID and secret in
 Decky's settings dir at runtime (mode 600), not in the plugin.
