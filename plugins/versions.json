@@ -25,6 +25,12 @@
       "packages": ["v4l-utils"],
       "version": "0.1.1",
       "zip": "plugins/cec-remote.zip"
+    },
+    {
+      "dir": "bc250-performance",
+      "name": "BC-250 Performance",
+      "version": "0.1.0",
+      "zip": "plugins/bc250-performance.zip"
     }
   ]
 }
