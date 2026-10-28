@@ -11,7 +11,7 @@
 #   decky   Decky plugins installed from local zip files
 #   apps    Android TV (Waydroid), Xbox Cloud Gaming, GeForce NOW, Discord
 #           and JDownloader 2, each added to the Steam library
-#   ctlcenter  BC-250 Control Center (AUR) — GPU/CPU/fan tuning
+#   aur     AUR packages: BC-250 Control Center (GPU/CPU/fan tuning)
 #   streamres  Steam Link streams at 1080p so they show the whole screen
 #
 # Every component can be installed and reverted independently. What has been
@@ -1733,6 +1733,54 @@ ctlcenter_revert() {
     say "Removed."
 }
 
+# Built from the AUR by Control Center's own "Prepare dependencies" step, not
+# by this script, so they are listed here but left to Control Center. umr is
+# only built there when the repos cannot provide it.
+AUR_PULLED_IN="cyan-skillfish-governor-smu umr umr-git"
+
+aur_menu() {
+    while :; do
+        header "AUR packages"
+        printf '  %sBuilt from the AUR as your user. Pick an installed one to remove it.%s\n\n' "$C_DIM" "$C_RESET"
+        item 1 "BC-250 Control Center"   "$(status ctlcenter)"
+        printf '     %sbc250-control-center-git — monitoring, GPU/CPU tuning, CU and fan control%s\n' "$C_DIM" "$C_RESET"
+        echo
+        printf '  %sPulled in by Control Center'"'"'s "Prepare dependencies":%s\n' "$C_DIM" "$C_RESET"
+        _shown=no
+        for _p in $AUR_PULLED_IN; do
+            # umr usually comes from the repos; only an AUR build belongs here.
+            if _v=$(pacman -Qm "$_p" 2>/dev/null); then _ok "$_p" "${_v#* }"; _shown=yes; fi
+        done
+        [ "$_shown" = yes ] || _none "none yet" "run Prepare dependencies in Control Center"
+        echo
+        item l "List every AUR package on this box"
+        item b "Back"
+        printf '\n  %sChoice:%s ' "$C_CYAN" "$C_RESET"
+        read -r c
+        case "$c" in
+            1) if is_done ctlcenter; then
+                   if confirm "Remove BC-250 Control Center?"; then ctlcenter_revert || true; fi
+               else ctlcenter_install || true; fi
+               pause ;;
+            l|L) aur_list; pause ;;
+            b|B) return ;;
+            *) warn "no such option"; sleep 1 ;;
+        esac
+    done
+}
+
+# Everything installed that no configured repo provides: AUR builds, plus
+# anything installed by hand from a file.
+aur_list() {
+    say "Packages not from any configured repo (pacman -Qm)"
+    _list=$(pacman -Qm 2>/dev/null) || true
+    if [ -z "$_list" ]; then
+        say "None."
+        return 0
+    fi
+    printf '%s\n' "$_list" | sed 's/^/     /'
+}
+
 # ============================================================ QUICK BOOT ====
 # Limine's own quiet mode hides the boot menu, and a 1 second timeout boots
 # the default entry right away. Pressing a key during that second still
@@ -2798,9 +2846,9 @@ show_status() {
     else _none "JDownloader 2" "not installed"; fi
     _file_line "launcher" "$REAL_HOME/jdownloader.sh" "$_w"
 
-    # ---- 7. Control Center
+    # ---- 7. AUR packages
     echo
-    item 7 "BC-250 Control Center" "$(status ctlcenter)"
+    item 7 "AUR: BC-250 Control Center" "$(status ctlcenter)"
     if pacman -Qq bc250-control-center-git >/dev/null 2>&1; then
         _ok "package" "$(pacman -Q bc250-control-center-git 2>/dev/null)"
     elif is_done ctlcenter; then
@@ -3013,12 +3061,12 @@ _offer_restart() {
 
 # ================================================================== MENUS ===
 
+# AUR packages build from unreviewed source, so they stay opt-in: option 7.
 install_all() {
     cec_install   || warn "cec failed"
     led_install   || warn "led failed"
     power_install || warn "power failed"
     guide_install || warn "guide failed"
-    ctlcenter_install || warn "control center failed"
     boot_install  || warn "quick boot failed"
     streamres_install || warn "steam link 1080p failed"
     atv_install   || warn "android tv failed"
@@ -3036,7 +3084,7 @@ revert_menu() {
         item 4 "Guide button -> input"   "$(status guide)"
         item 5 "Decky plugins"           "$(status decky)"
         item 6 "Apps"                    "$(apps_status)"
-        item 7 "BC-250 Control Center"   "$(status ctlcenter)"
+        item 7 "AUR packages"            "$(status ctlcenter)"
         item 8 "Quick, quiet boot menu"  "$(status boot)"
         item 9 "Steam Link at 1080p"     "$(status streamres)"
         echo
@@ -3051,7 +3099,7 @@ revert_menu() {
             4) guide_revert || true; pause ;;
             5) decky_revert || true; pause ;;
             6) apps_menu ;;
-            7) ctlcenter_revert || true; pause ;;
+            7) aur_menu ;;
             8) boot_revert  || true; pause ;;
             9) streamres_revert || true; pause ;;
             0) if confirm "Revert everything?"; then
@@ -3098,7 +3146,7 @@ main_menu() {
         item 4 "Guide button -> input"   "$(status guide)"
         item 5 "Decky plugins"           "$(status decky)"
         item 6 "Apps"                    "$(apps_status)"
-        item 7 "BC-250 Control Center"   "$(status ctlcenter)"
+        item 7 "AUR packages"            "$(status ctlcenter)"
         item 8 "Quick, quiet boot menu"  "$(status boot)"
         item 9 "Steam Link at 1080p"     "$(status streamres)"
         item x "Experiments"             "$(status cecfix)"
@@ -3118,7 +3166,7 @@ main_menu() {
             4) guide_install || true; pause ;;
             5) decky_menu ;;
             6) apps_menu ;;
-            7) ctlcenter_install || true; pause ;;
+            7) aur_menu ;;
             8) boot_install || true; pause ;;
             9) streamres_install || true; pause ;;
             x|X) experiments_menu ;;
