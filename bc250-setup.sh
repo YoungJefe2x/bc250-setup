@@ -3061,12 +3061,12 @@ _offer_restart() {
 
 # ================================================================== MENUS ===
 
+# AUR packages build from unreviewed source, so they stay opt-in: option 7.
 install_all() {
     cec_install   || warn "cec failed"
     led_install   || warn "led failed"
     power_install || warn "power failed"
     guide_install || warn "guide failed"
-    ctlcenter_install || warn "control center failed"
     boot_install  || warn "quick boot failed"
     streamres_install || warn "steam link 1080p failed"
     atv_install   || warn "android tv failed"

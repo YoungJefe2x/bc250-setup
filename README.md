@@ -246,7 +246,8 @@ Still manual: adding `~/waydroid-tv.sh` to Steam as a non-Steam game.
 
 Everything this script builds from the AUR sits in this submenu, so it is
 easy to see what comes from there rather than from the CachyOS repos. Pick
-an installed one to remove it.
+an installed one to remove it. AUR packages are optional: **Install all**
+skips them, so they go on only when picked here.
 
 | Package | What it is | Installed by |
 | --- | --- | --- |
