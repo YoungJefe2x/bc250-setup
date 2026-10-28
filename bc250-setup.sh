@@ -1393,7 +1393,7 @@ discord_install() {
     _mute=""
     case "$_run" in
         *vesktop* | *Vesktop* | *GoofCord*) ;;
-        *) _mute="grep -q '\"mute_sounds\": false' \"\$HOME/homebrew/settings/Discord Deck/config.json\" 2>/dev/null || set -- --mute-audio \"\$@\"" ;;
+        *) _mute="grep -q '\"mute_sounds\": false' \"\$HOME/homebrew/settings/discord-deck/config.json\" 2>/dev/null || set -- --mute-audio \"\$@\"" ;;
     esac
     cat > "$REAL_HOME/discord.sh" << LAUNCH
 #!/bin/sh
@@ -2444,7 +2444,7 @@ PY
 # Discord Deck needs a Discord application's client ID and secret. Typing two
 # long strings into a text field with a controller is miserable, so offer to
 # write them straight into the plugin's settings file here instead.
-DISCORD_SETTINGS_DIR="$REAL_HOME/homebrew/settings/Discord Deck"
+DISCORD_SETTINGS_DIR="$REAL_HOME/homebrew/settings/discord-deck"
 
 discord_credentials() {
     _cfg="$DISCORD_SETTINGS_DIR/config.json"
