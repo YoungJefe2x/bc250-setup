@@ -16,7 +16,7 @@ sudo sh bc250-setup.sh
   4) Guide button -> input   [not installed]
   5) Decky plugins           [not installed]
   6) Apps                    [not installed]
-  7) AUR packages            [not installed]
+  7) BC-250 Control Center   [not installed]
   8) Quick, quiet boot menu  [not installed]
   9) Steam Link at 1080p     [not installed]
 
@@ -242,23 +242,9 @@ It needs no sudo rule.
 
 Still manual: adding `~/waydroid-tv.sh` to Steam as a non-Steam game.
 
-### 7. AUR packages
+### 7. BC-250 Control Center
 
-Everything this script builds from the AUR sits in this submenu, so it is
-easy to see what comes from there rather than from the CachyOS repos. Pick
-an installed one to remove it.
-
-| Package | What it is | Installed by |
-| --- | --- | --- |
-| `bc250-control-center-git` | BC-250 Control Center (below) | this menu |
-| `cyan-skillfish-governor-smu` | GPU governor | Control Center's **Prepare dependencies** |
-| `umr` / `umr-git` | AMD GPU debugger, only when the repos can't provide it | Control Center's **Prepare dependencies** |
-
-The submenu shows which of the last two are installed, and `l` lists every
-package on the box that no configured repo provides (`pacman -Qm`).
-
-**BC-250 Control Center** installs
-[movacx/bc250-control-center](https://github.com/movacx/bc250-control-center)
+Installs [movacx/bc250-control-center](https://github.com/movacx/bc250-control-center)
 from the AUR (`bc250-control-center-git`) — system monitoring, GPU control,
 CPU tuning, compute units and fan control in one desktop app.
 
