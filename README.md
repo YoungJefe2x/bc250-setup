@@ -180,7 +180,7 @@ No credentials are baked in. Discord Deck stores its client ID and secret in
 Decky's settings dir at runtime (mode 600), not in the plugin.
 
 Installing Discord Deck offers to set those credentials up front, writing
-`~/homebrew/settings/Discord Deck/config.json` directly so you don't have to
+`~/homebrew/settings/discord-deck/config.json` directly so you don't have to
 type two long strings into a text field with a controller. It prints the
 steps and skips if a config already exists:
 
