@@ -19,6 +19,7 @@ sudo sh bc250-setup.sh
   7) AUR packages            [not installed]
   8) Quick, quiet boot menu  [not installed]
   9) Steam Link at 1080p     [not installed]
+  c) Claude Code auto-update [not installed]
 
   a) Install all
   s) Status — what is actually installed
@@ -288,6 +289,21 @@ and puts back any line it replaced; if the resolution was changed in Steam
 during the stream, it leaves the file alone. A stream cut off by a reboot is
 restored when the service next starts. Set `BC250_STREAM_MODE` in the unit
 to use a different mode.
+
+### c. Claude Code auto-update
+
+Claude Code only updates itself when it is the native install in
+`~/.local/bin`. A copy from pacman/the AUR or from npm stays on the version it
+was installed at, which can leave features such as Remote Control out of
+reach. This option runs the official native installer as your user, then
+removes any pacman or npm copy so the native one is the `claude` on `PATH`
+(`/etc/fish/conf.d/bc250-local-bin.fish` adds `~/.local/bin` for fish).
+
+A user timer, `bc250-claude-update.timer`, runs `claude update` five minutes
+after login and every 6 hours after that, so it is current even when Claude
+Code has not been opened for a while. A Claude Code process that is already
+running keeps its version until it is restarted. Revert removes the timer and
+leaves Claude Code installed. Not part of **Install all**.
 
 ## Status
 

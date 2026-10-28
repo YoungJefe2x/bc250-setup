@@ -13,6 +13,7 @@
 #           and JDownloader 2, each added to the Steam library
 #   aur     AUR packages: BC-250 Control Center (GPU/CPU/fan tuning)
 #   streamres  Steam Link streams at 1080p so they show the whole screen
+#   claude  Claude Code on its self-updating native install, plus an update timer
 #
 # Every component can be installed and reverted independently. What has been
 # installed is recorded under /var/lib/bc250-setup so revert knows what to undo.
@@ -1644,6 +1645,135 @@ streamres_revert() {
     say "Removed."
 }
 
+# ======================================================= CLAUDE CODE ========
+# Claude Code only updates itself when it is the native install in
+# ~/.local/bin; a pacman/AUR or npm copy never does, and stays on whatever
+# version it was installed at. This moves it to the native install and adds
+# a user timer that runs `claude update` a few times a day, so it is current
+# even when Claude Code has not been opened for a while.
+
+CLAUDE_UPD_BIN=/usr/local/bin/bc250-claude-update
+CLAUDE_UPD_UNIT=/etc/systemd/user/bc250-claude-update.service
+CLAUDE_UPD_TIMER=/etc/systemd/user/bc250-claude-update.timer
+CLAUDE_FISH_PATH=/etc/fish/conf.d/bc250-local-bin.fish
+CLAUDE_NPM_PKG=@anthropic-ai/claude-code
+
+claude_write_files() {
+    cat > "$CLAUDE_UPD_BIN" << 'SCRIPT'
+#!/bin/sh
+# Update the native Claude Code install; run by bc250-claude-update.timer.
+CLAUDE="$HOME/.local/bin/claude"
+[ -x "$CLAUDE" ] || { echo "no native Claude Code install at $CLAUDE"; exit 0; }
+"$CLAUDE" --version
+exec "$CLAUDE" update
+SCRIPT
+    chmod 755 "$CLAUDE_UPD_BIN"
+
+    mkdir -p "$(dirname "$CLAUDE_UPD_UNIT")"
+    cat > "$CLAUDE_UPD_UNIT" << 'UNIT'
+[Unit]
+Description=Update Claude Code
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/bc250-claude-update
+UNIT
+    cat > "$CLAUDE_UPD_TIMER" << 'UNIT'
+[Unit]
+Description=Update Claude Code a few times a day
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+    # The native launcher lives in ~/.local/bin; make sure fish finds it.
+    mkdir -p "$(dirname "$CLAUDE_FISH_PATH")"
+    cat > "$CLAUDE_FISH_PATH" << 'FISH'
+# Native installs such as Claude Code put their launchers here.
+fish_add_path -g $HOME/.local/bin
+FISH
+}
+
+# Copies of Claude Code that never update themselves: "pacman <pkg>" and
+# "npm <who>" lines, one per copy found.
+claude_unmanaged() {
+    for _f in /usr/bin/claude /usr/local/bin/claude; do
+        _p=$(pacman -Qqo "$_f" 2>/dev/null) && echo "pacman $_p"
+    done | sort -u
+    if command -v npm >/dev/null 2>&1; then
+        npm ls -g --depth=0 "$CLAUDE_NPM_PKG" >/dev/null 2>&1 && echo "npm root"
+        runuser -u "$REAL_USER" -- env HOME="$REAL_HOME" \
+            npm ls -g --depth=0 "$CLAUDE_NPM_PKG" >/dev/null 2>&1 && echo "npm user"
+    fi
+    return 0
+}
+
+claude_install() {
+    say "Claude Code auto-update"
+    if [ "$REAL_USER" = "root" ]; then
+        warn "Claude Code installs into your home directory."
+        warn "Run this script with sudo from your normal account, not a root shell."
+        return 1
+    fi
+    pacman -S --needed --noconfirm curl || return 1
+
+    say "Installing the native, self-updating Claude Code as $REAL_USER"
+    if ! runuser -u "$REAL_USER" -- env HOME="$REAL_HOME" \
+        bash -c 'curl -fsSL https://claude.ai/install.sh | bash'; then
+        warn "The Claude Code installer failed; nothing else was changed."
+        return 1
+    fi
+
+    # Older copies would keep shadowing the native one on PATH.
+    claude_unmanaged | while read -r _how _what; do
+        case "$_how" in
+            pacman) say "Removing package $_what (it never updates itself)"
+                    pacman -Rns --noconfirm "$_what" ||
+                        warn "removal failed; try: sudo pacman -Rns $_what" ;;
+            npm)    say "Removing the npm copy of Claude Code"
+                    if [ "$_what" = root ]; then
+                        npm uninstall -g "$CLAUDE_NPM_PKG" ||
+                            warn "removal failed; try: sudo npm uninstall -g $CLAUDE_NPM_PKG"
+                    else
+                        runuser -u "$REAL_USER" -- env HOME="$REAL_HOME" \
+                            npm uninstall -g "$CLAUDE_NPM_PKG" ||
+                            warn "removal failed; try: npm uninstall -g $CLAUDE_NPM_PKG"
+                    fi ;;
+        esac
+    done
+
+    claude_write_files
+    systemctl --global enable bc250-claude-update.timer
+    user_systemctl daemon-reload 2>/dev/null || true
+    if user_systemctl start bc250-claude-update.timer 2>/dev/null; then
+        user_systemctl start bc250-claude-update.service 2>/dev/null || true
+    else
+        warn "the update timer starts at your next login"
+    fi
+    mark claude
+    _v=$(runuser -u "$REAL_USER" -- env HOME="$REAL_HOME" \
+        "$REAL_HOME/.local/bin/claude" --version 2>/dev/null) || _v="unknown"
+    say "Done. Claude Code $_v now updates itself, and a timer checks for a"
+    say "new version every 6 hours. Close and reopen any running Claude Code"
+    say "(including Remote Control) to use the new version."
+}
+
+claude_revert() {
+    say "Removing Claude Code auto-update"
+    user_systemctl stop bc250-claude-update.timer 2>/dev/null || true
+    systemctl --global disable bc250-claude-update.timer 2>/dev/null || true
+    rm -f "$CLAUDE_UPD_TIMER" "$CLAUDE_UPD_UNIT" "$CLAUDE_UPD_BIN" "$CLAUDE_FISH_PATH"
+    user_systemctl daemon-reload 2>/dev/null || true
+    unmark claude
+    say "Removed the update timer. Claude Code itself stays installed and"
+    say "still updates itself while it runs."
+}
+
 # ========================================================= CONTROL CENTER ===
 
 # movacx/bc250-control-center — system monitoring, GPU/CPU tuning, CU and fan
@@ -2888,6 +3018,26 @@ show_status() {
     _file_line "bc250-stream-res" "$STREAMRES_BIN" "$_w"
     _file_line "user unit" "$STREAMRES_UNIT" "$_w"
 
+    # ---- c. Claude Code auto-update
+    echo
+    item c "Claude Code auto-update" "$(status claude)"
+    _w=no; is_done claude && _w=yes
+    if [ -x "$REAL_HOME/.local/bin/claude" ]; then
+        _ok "claude" "$(runuser -u "$REAL_USER" -- env HOME="$REAL_HOME" \
+            "$REAL_HOME/.local/bin/claude" --version 2>/dev/null | head -n 1)"
+    elif [ "$_w" = yes ]; then _bad "claude" "missing: $REAL_HOME/.local/bin/claude"
+    else _none "claude" "no native install"; fi
+    # Not a pipe: _bad has to count in this shell.
+    _old=$(claude_unmanaged)
+    if [ -n "$_old" ]; then
+        while read -r _how _what; do
+            _bad "old copy" "$_how $_what (never updates; option c removes it)"
+        done << OLD
+$_old
+OLD
+    fi
+    _file_line "update timer" "$CLAUDE_UPD_TIMER" "$_w"
+
     # ---- x. Experiments
     echo
     item x "TV 4K fix (experiment)" "$(status cecfix)"
@@ -3041,6 +3191,7 @@ refresh_installed() {
     # Boot loader updates can rewrite limine.conf.
     if is_done boot;  then boot_install  || warn "boot menu refresh failed"; _did=1; fi
     if is_done streamres; then streamres_write_files; _did=1; fi
+    if is_done claude; then claude_write_files; _did=1; fi
     if is_done cecfix; then cecfix_install || warn "TV 4K fix not re-applied"; _did=1; fi
     # Plugins updated outside this script may need packages they didn't before.
     for _p in $EMBEDDED_PLUGINS; do
@@ -3096,6 +3247,7 @@ revert_menu() {
         item 7 "AUR packages"            "$(status ctlcenter)"
         item 8 "Quick, quiet boot menu"  "$(status boot)"
         item 9 "Steam Link at 1080p"     "$(status streamres)"
+        item c "Claude Code auto-update" "$(status claude)"
         echo
         item 0 "Revert everything"
         item b "Back"
@@ -3111,7 +3263,9 @@ revert_menu() {
             7) aur_menu ;;
             8) boot_revert  || true; pause ;;
             9) streamres_revert || true; pause ;;
+            c|C) claude_revert || true; pause ;;
             0) if confirm "Revert everything?"; then
+                   if is_done claude; then claude_revert || true; fi
                    if is_done streamres; then streamres_revert || true; fi
                    if is_done cecfix; then cecfix_revert || true; fi
                    boot_revert  || true
@@ -3158,6 +3312,7 @@ main_menu() {
         item 7 "AUR packages"            "$(status ctlcenter)"
         item 8 "Quick, quiet boot menu"  "$(status boot)"
         item 9 "Steam Link at 1080p"     "$(status streamres)"
+        item c "Claude Code auto-update" "$(status claude)"
         item x "Experiments"             "$(status cecfix)"
         rule
         item a "Install all"
@@ -3178,6 +3333,7 @@ main_menu() {
             7) aur_menu ;;
             8) boot_install || true; pause ;;
             9) streamres_install || true; pause ;;
+            c|C) claude_install || true; pause ;;
             x|X) experiments_menu ;;
             a|A) install_all; pause ;;
             s|S) show_status || true; pause ;;
