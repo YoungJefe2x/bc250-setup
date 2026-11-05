@@ -1053,7 +1053,7 @@ def android_up():
 
 
 def shell(*cmd, timeout=15):
-    return subprocess.run(["/usr/bin/waydroid", "shell", *cmd],
+    return subprocess.run(["/usr/bin/waydroid", "shell", "--", *cmd],
                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                           stderr=subprocess.DEVNULL, timeout=timeout, text=True)
 
