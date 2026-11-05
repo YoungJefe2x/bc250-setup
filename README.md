@@ -175,6 +175,10 @@ or removed there, plus Install all, Status check and Test HDMI-CEC. It calls
 `--install <option>`, `--remove <option>`, `--install-all`, `--status` and
 `--test-cec`, where every question takes its default answer (removing keeps
 data, the ESP32 is only flashed when a new firmware release is out).
+Its Decky plugins group installs or removes the same plugins as option 5
+(`--plugins`, `--plugin-install <id>`, `--plugin-remove <id>`), without
+restarting Decky; Discord Deck's credentials are then entered through its own
+phone setup page.
 
 BC-250 Performance turns SMT off or on through
 `/sys/devices/system/cpu/smt/control` (6 cores / 6 threads or 6 cores / 12
