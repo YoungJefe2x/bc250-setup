@@ -3,7 +3,7 @@
     {
       "dir": "bc250-lighting",
       "name": "BC-250 Lighting",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "zip": "plugins/bc250-lighting.zip"
     },
     {
@@ -16,7 +16,7 @@
       "dir": "discord-deck",
       "name": "Discord Deck",
       "packages": ["python-gobject", "python-cairo", "gtk3", "xorg-xprop", "qrencode"],
-      "version": "0.9.7",
+      "version": "1.0.0",
       "zip": "plugins/discord-deck.zip"
     },
     {
