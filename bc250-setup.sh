@@ -1022,8 +1022,8 @@ directly whatever is on screen. Its node is removed again from Android's own
 
 While another app is in front of Android TV (Steam's menu, Discord, a game),
 atv-input-gate flags it in /run/user/<uid>/atv-input-blocked. Steam's pad
-is then removed from Android's /dev/input as well, and created again once
-Android TV is in front, so only Android stops reading it.
+is then removed from Android's /dev/input as well, and announced to Android
+again once Android TV is in front, so only Android stops reading it.
 """
 import glob, os, select, struct, subprocess, time
 
@@ -1093,20 +1093,16 @@ def hide_pads():
 
 
 def show_pads():
-    """Create Steam's pad in Android's /dev/input again."""
-    cmds = []
+    """Give Steam's pad back to Android.
+
+    Announcing the device again makes Android create its node, the same
+    way the launcher hands Android the pad at start.
+    """
     for path in pad_paths():
         try:
-            with open(f"/sys/class/input/{os.path.basename(path)}/dev") as f:
-                major, minor = f.read().strip().split(":")
-        except (OSError, ValueError):
-            continue
-        cmds.append(f"[ -e {path} ] || {{ mknod {path} c {major} {minor}"
-                    f" && chown root:input {path} && chmod 660 {path}; }}")
-    if cmds and own_dev_input():
-        try:
-            shell("sh", "-c", "; ".join(cmds))
-        except (OSError, subprocess.SubprocessError):
+            with open(f"/sys/class/input/{os.path.basename(path)}/uevent", "w") as f:
+                f.write("add")
+        except OSError:
             pass
 
 
