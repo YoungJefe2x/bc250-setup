@@ -169,6 +169,13 @@ the repo copy and offers an "Update setup tool" button (keeps a `.bak`, then
 flags the next run to re-apply installed components, as `u` does). A copy
 inside a git checkout is left to `git pull`.
 
+System Updates' Tools tab also runs this script's menu options without a
+terminal: each option (except Decky plugins and Experiments) can be installed
+or removed there, plus Install all, Status check and Test HDMI-CEC. It calls
+`--install <option>`, `--remove <option>`, `--install-all`, `--status` and
+`--test-cec`, where every question takes its default answer (removing keeps
+data, the ESP32 is only flashed when a new firmware release is out).
+
 BC-250 Performance turns SMT off or on through
 `/sys/devices/system/cpu/smt/control` (6 cores / 6 threads or 6 cores / 12
 threads, no reboot) and performance mode sets every CPU's cpufreq governor to
@@ -216,7 +223,7 @@ Steam's overlay library doesn't get loaded into them.
 
 A shortcut System Updates creates also gets library art (capsule, wide capsule,
 hero, logo) and an icon: the top-rated art on SteamGridDB when a free API key is
-entered in System Updates' settings (SteamGridDB key), otherwise drawn from the
+entered on System Updates' Tools tab (SteamGridDB key), otherwise drawn from the
 app's own icon. A "Fetch library art" button there redoes the art for shortcuts
 you already have. Shortcuts that already exist, and art you set yourself, are
 only changed by that button.
