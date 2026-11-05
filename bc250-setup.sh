@@ -1019,6 +1019,11 @@ A controller or keyboard that reconnects while Android TV is open is
 announced to Android like any new device, and Android would then read it
 directly whatever is on screen. Its node is removed again from Android's own
 /dev/input (a separate tmpfs; the host's node is untouched).
+
+While another app is in front of Android TV (Steam's menu, Discord, a game),
+atv-input-gate flags it in /run/user/<uid>/atv-input-blocked. Steam's pad
+is then removed from Android's /dev/input as well, and created again once
+Android TV is in front, so only Android stops reading it.
 """
 import glob, os, select, struct, subprocess, time
 
@@ -1030,6 +1035,7 @@ PAD = "Microsoft X-Box 360 pad"
 # Android's device manager creates the node a moment after the device shows
 # up; remove it then, and once more in case it was slow.
 PURGE_AFTER = (1.5, 5.0)
+BLOCK_FLAG = "/run/user/*/atv-input-blocked"
 
 
 def name(path):
@@ -1068,6 +1074,42 @@ def own_dev_input():
     return any(m[1] == "/dev" and m[2] == "tmpfs" for m in dev)
 
 
+def blocked():
+    return bool(glob.glob(BLOCK_FLAG))
+
+
+def pad_paths():
+    return sorted(p for p in glob.glob("/dev/input/event*") if name(p).startswith(PAD))
+
+
+def hide_pads():
+    """Take Steam's pad out of Android only; the host's node stays."""
+    paths = pad_paths()
+    if paths and own_dev_input():
+        try:
+            shell("rm", "-f", *paths)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+def show_pads():
+    """Create Steam's pad in Android's /dev/input again."""
+    cmds = []
+    for path in pad_paths():
+        try:
+            with open(f"/sys/class/input/{os.path.basename(path)}/dev") as f:
+                major, minor = f.read().strip().split(":")
+        except (OSError, ValueError):
+            continue
+        cmds.append(f"[ -e {path} ] || {{ mknod {path} c {major} {minor}"
+                    f" && chown root:input {path} && chmod 660 {path}; }}")
+    if cmds and own_dev_input():
+        try:
+            shell("sh", "-c", "; ".join(cmds))
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
 def purge(paths):
     """Drop host devices other than Steam's pad from Android."""
     # Names are read again now: a node that has only just appeared can
@@ -1085,9 +1127,21 @@ down = {}           # (fd, button) -> time it went down, None once fired
 seen = set()        # every event node seen so far
 was_up = None       # unknown until the first scan
 purges = []         # (when, paths)
+hidden = False      # Steam's pad is out of Android while another app is in front
 next_scan = 0.0
+next_flag = 0.0
 while True:
     now = time.monotonic()
+    if now >= next_flag:
+        next_flag = now + 0.2
+        up_now = android_up()
+        want = up_now and blocked()
+        if want != hidden:
+            if want:
+                hide_pads()
+            elif up_now:
+                show_pads()
+            hidden = want
     if now >= next_scan:
         next_scan = now + 1
         up = android_up()
@@ -1108,12 +1162,19 @@ while True:
             purges.append((now, paths))
         elif up and was_up and new:
             purges += [(now + d, new) for d in PURGE_AFTER]
+            if hidden:
+                # A pad recreated on reconnect must stay out while hidden.
+                purges += [(now + d, "pads") for d in PURGE_AFTER]
         if not up:
             purges.clear()
         was_up = up
     for item in [p for p in purges if p[0] <= now]:
         purges.remove(item)
-        purge(item[1])
+        if item[1] == "pads":
+            if hidden:
+                hide_pads()
+        else:
+            purge(item[1])
     if not fds:
         time.sleep(0.5)
         continue
@@ -1140,14 +1201,14 @@ while True:
     for key, since in list(down.items()):
         if since is not None and now - since >= HOLD:
             down[key] = None
-            if android_up():
+            if android_up() and not hidden:
                 home()
 HOMEBTN
     chmod 755 /usr/local/bin/atv-home-button
 
     cat > /etc/systemd/system/atv-home-button.service << 'UNIT'
 [Unit]
-Description=Android TV: hold View/Create or Menu/Options for Home; keep reconnected controllers out
+Description=Android TV: hold View/Create or Menu/Options for Home; keep other controllers and other apps' input out
 After=waydroid-container.service
 
 [Service]
@@ -1163,42 +1224,32 @@ UNIT
     systemctl restart atv-home-button.service || \
         warn "check: systemctl status atv-home-button"
 
-    # Steam's menu opens over Android TV without stopping it, and Android
-    # reads Steam's virtual pad directly, so it would keep acting on every
-    # press made in the menu. While gamescope reports the Steam UI (app 769)
-    # as focused, this holds an exclusive grab on the pad so Android gets
-    # nothing; focus back on Android TV releases it. Runs as the user (the pad
-    # is user-accessible) and is started by the launcher.
+    # Steam's menu, Discord or a game can open over Android TV without
+    # stopping it, and Android reads Steam's virtual pad directly, so it would
+    # act on every press meant for the app in front. This user helper follows
+    # gamescope's focused app and flags when Android TV is not in front;
+    # atv-home-button (root) then takes the pad out of Android only, so the
+    # app in front keeps it. Started by the launcher.
     command -v xprop >/dev/null 2>&1 || \
         pacman -S --needed --noconfirm xorg-xprop || warn "xorg-xprop install failed"
     cat > /usr/local/bin/atv-input-gate << 'GATE'
 #!/usr/bin/env python3
-"""Keep Steam's virtual pad away from Android TV while the Steam UI has focus.
+"""Flag when Android TV is not the app in front, so it can be cut off the pad.
 
-While gamescope's GAMESCOPE_FOCUSED_APP is 769 (Steam's own UI), take an
-exclusive grab (EVIOCGRAB) on every "Microsoft X-Box 360 pad" node, so
-Android reads nothing; release it once anything else has focus. Steam
-presents Xbox and PlayStation controllers alike through that pad. Pad nodes
-are rescanned every second because they are recreated when a controller
-reconnects. Exits when Android TV (cage) closes or gamescope goes away.
+Follows gamescope's GAMESCOPE_FOCUSED_APP on its root display (:0; Steam
+starts shortcuts with DISPLAY=:1, which lacks the atom). Android TV's own app
+id comes from SteamAppId in the launcher's environment. While any other app
+has focus (Steam's menu is 769), $XDG_RUNTIME_DIR/atv-input-blocked exists;
+atv-home-button removes Steam's pad from Android's /dev/input then and puts
+it back once Android TV is in front again. Exits when Android TV (cage)
+closes or gamescope goes away, clearing the flag.
 """
-import fcntl, glob, os, select, subprocess
+import os, select, signal, subprocess, sys
 
-EVIOCGRAB = 0x40044590
+ANDROID = os.environ.get("SteamAppId", "")
 STEAM_UI = "769"
-PAD = "Microsoft X-Box 360 pad"
-
-
-def pads():
-    out = set()
-    for path in glob.glob("/dev/input/event*"):
-        try:
-            with open(f"/sys/class/input/{os.path.basename(path)}/device/name") as f:
-                if f.read().startswith(PAD):
-                    out.add(path)
-        except OSError:
-            pass
-    return out
+FLAG = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}",
+                    "atv-input-blocked")
 
 
 def cage_up():
@@ -1206,48 +1257,39 @@ def cage_up():
                           stderr=subprocess.DEVNULL).returncode == 0
 
 
+def flag(on):
+    try:
+        if on:
+            open(FLAG, "w").close()
+        else:
+            os.unlink(FLAG)
+    except OSError:
+        pass
+
+
 spy = subprocess.Popen(["xprop", "-root", "-spy", "GAMESCOPE_FOCUSED_APP"],
-                       env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0")},
+                       env={**os.environ, "DISPLAY": ":0"},
                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-grabbed = {}        # path -> fd
-block = False
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+flag(False)
 seen_cage = False   # the launcher starts this before cage is up
-while True:
-    ready, _, _ = select.select([spy.stdout], [], [], 1.0)
-    if ready:
-        line = spy.stdout.readline()
-        if not line:
+try:
+    while True:
+        ready, _, _ = select.select([spy.stdout], [], [], 1.0)
+        if ready:
+            line = spy.stdout.readline()
+            if not line:
+                break
+            if "=" in line:
+                app = line.rsplit("=", 1)[-1].strip()
+                flag(app != ANDROID if ANDROID else app == STEAM_UI)
+        up = cage_up()
+        if seen_cage and not up:
             break
-        block = line.strip().endswith("= " + STEAM_UI)
-    up = cage_up()
-    if seen_cage and not up:
-        break
-    seen_cage = seen_cage or up
-    want = pads() if block else set()
-    for path in list(grabbed):
-        if path not in want:
-            try:
-                fcntl.ioctl(grabbed[path], EVIOCGRAB, 0)
-            except OSError:
-                pass
-            os.close(grabbed.pop(path))
-    for path in want - grabbed.keys():
-        try:
-            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
-        except OSError:
-            continue
-        try:
-            fcntl.ioctl(fd, EVIOCGRAB, 1)
-            grabbed[path] = fd
-        except OSError:
-            os.close(fd)
-    for fd in grabbed.values():  # drain, so the kernel buffer never fills
-        try:
-            while os.read(fd, 4096):
-                pass
-        except OSError:
-            pass
-spy.kill()
+        seen_cage = seen_cage or up
+finally:
+    flag(False)
+    spy.kill()
 GATE
     chmod 755 /usr/local/bin/atv-input-gate
 
