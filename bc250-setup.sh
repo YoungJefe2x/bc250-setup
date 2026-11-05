@@ -549,6 +549,56 @@ print(f">> strip.leds set to {count}")
 PY
 }
 
+# Newer daemons renamed config keys and reject the old ones: "esp32" {...}
+# moved to the top level, "sinks": {"serial"} became "serial", the
+# steam_download effect became progress with source steam_dl, and rules take
+# no extra keys (BC-250 Lighting 0.2.2 put _decky_* markers there; they now
+# go in settings). Migrate a copy, and only replace the config when the
+# freshly built daemon accepts it, so the running old daemon is never left
+# with a file it can't read.
+led_migrate_config() {
+    [ -f "$LED_CONFIG" ] && [ -x "$LED_SRC/led" ] || return 0
+    "$LED_SRC/led" --check "$LED_CONFIG" > /dev/null 2>&1 && return 0
+    _tmp=$(mktemp "$LED_CONFIG.migrate.XXXXXX") || return 0
+    python3 - "$LED_CONFIG" "$_tmp" << 'PY' || { rm -f "$_tmp"; warn "could not migrate $LED_CONFIG"; return 0; }
+import json, sys
+src, dst = sys.argv[1], sys.argv[2]
+with open(src) as f:
+    cfg = json.load(f)
+esp = cfg.pop("esp32", None)
+if isinstance(esp, dict):
+    for k, v in esp.items():
+        cfg.setdefault(k, v)
+sinks = cfg.pop("sinks", None)
+if isinstance(sinks, dict):
+    if isinstance(sinks.get("serial"), dict):
+        cfg.setdefault("serial", sinks["serial"])
+    cmd = sinks.get("power_button_command") or cfg.pop("power_button_command", None)
+    if sinks.get("power_button") and cmd:
+        cfg.setdefault("power_switch", {}).setdefault("short_press", cmd)
+for r in cfg.get("rules") or []:
+    if not isinstance(r, dict):
+        continue
+    if r.get("effect") == "steam_download":
+        r["effect"] = "progress"
+        r.setdefault("settings", {}).setdefault("source", "steam_dl")
+    for k in [k for k in r if k.startswith("_")]:
+        r.setdefault("settings", {})[k] = r.pop(k)
+with open(dst, "w") as f:
+    json.dump(cfg, f, indent=4)
+    f.write("\n")
+PY
+    if "$LED_SRC/led" --check "$_tmp" > /dev/null 2>&1; then
+        cp -p "$LED_CONFIG" "$LED_CONFIG.bak-$(date +%Y%m%d-%H%M%S)"
+        chmod --reference="$LED_CONFIG" "$_tmp" 2>/dev/null || true
+        mv "$_tmp" "$LED_CONFIG"
+        say "Migrated $LED_CONFIG to the new daemon's format (backup kept next to it)"
+    else
+        rm -f "$_tmp"
+        warn "$LED_CONFIG still fails the new daemon's check; see: $LED_SRC/led --check $LED_CONFIG"
+    fi
+}
+
 # The receiver's serial port. make install adds a udev rule that names it
 # /dev/led-controller; nudge udev so that link exists without a replug, then
 # fall back to the first ttyACM/ttyUSB the way upstream's Makefile does.
@@ -627,6 +677,9 @@ led_install() {
         git clone "$LED_REPO" "$LED_SRC"
     fi
 
+    # make install refuses a config the new daemon's `led --check` rejects, so
+    # build first and bring the config up to the new format before installing.
+    ( cd "$LED_SRC" && make ) && led_migrate_config
     ( cd "$LED_SRC" && make install )
     # make install never overwrites an existing /etc/led-controller/config.json
     led_set_count
