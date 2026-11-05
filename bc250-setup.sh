@@ -1227,27 +1227,33 @@ UNIT
     # Steam's menu, Discord or a game can open over Android TV without
     # stopping it, and Android reads Steam's virtual pad directly, so it would
     # act on every press meant for the app in front. This user helper follows
-    # gamescope's focused app and flags when Android TV is not in front;
+    # gamescope's focused app and Steam's overlay (Quick Access) and flags when
+    # Android TV is not what the controller is driving;
     # atv-home-button (root) then takes the pad out of Android only, so the
     # app in front keeps it. Started by the launcher.
-    command -v xprop >/dev/null 2>&1 || \
-        pacman -S --needed --noconfirm xorg-xprop || warn "xorg-xprop install failed"
+    pacman -Q python-xlib >/dev/null 2>&1 || \
+        pacman -S --needed --noconfirm python-xlib || warn "python-xlib install failed"
     cat > /usr/local/bin/atv-input-gate << 'GATE'
 #!/usr/bin/env python3
-"""Flag when Android TV is not the app in front, so it can be cut off the pad.
+"""Flag when Android TV is not what the controller is driving.
 
-Follows gamescope's GAMESCOPE_FOCUSED_APP on its root display (:0; Steam
-starts shortcuts with DISPLAY=:1, which lacks the atom). Android TV's own app
-id comes from SteamAppId in the launcher's environment. While any other app
-has focus (Steam's menu is 769), $XDG_RUNTIME_DIR/atv-input-blocked exists;
-atv-home-button removes Steam's pad from Android's /dev/input then and puts
-it back once Android TV is in front again. Exits when Android TV (cage)
-closes or gamescope goes away, clearing the flag.
+Reads gamescope's root display (:0; Steam starts shortcuts with DISPLAY=:1,
+which lacks gamescope's atoms) five times a second:
+- GAMESCOPE_FOCUSED_APP: the app in front. Android TV's own app id comes
+  from SteamAppId in the launcher's environment; Steam's menu is 769.
+- STEAM_INPUT_FOCUS on Steam's overlay window (STEAM_OVERLAY): set while
+  Quick Access or another overlay takes the controller, even though the app
+  in front stays Android TV.
+While either says the input is not Android's, $XDG_RUNTIME_DIR/atv-input-blocked
+exists; atv-home-button removes Steam's pad from Android's /dev/input then
+and puts it back once Android TV has the controller again. Exits when
+Android TV (cage) closes, clearing the flag.
 """
-import os, select, signal, subprocess, sys
+import os, signal, subprocess, sys, time
+from Xlib import X, display
 
 ANDROID = os.environ.get("SteamAppId", "")
-STEAM_UI = "769"
+STEAM_UI = 769
 FLAG = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}",
                     "atv-input-blocked")
 
@@ -1267,29 +1273,52 @@ def flag(on):
         pass
 
 
-spy = subprocess.Popen(["xprop", "-root", "-spy", "GAMESCOPE_FOCUSED_APP"],
-                       env={**os.environ, "DISPLAY": ":0"},
-                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+def card(win, atom):
+    prop = win.get_full_property(atom, X.AnyPropertyType)
+    return int(prop.value[0]) if prop is not None and len(prop.value) else None
+
+
+def blocked(d, root, atoms):
+    app = card(root, atoms["GAMESCOPE_FOCUSED_APP"])
+    if app is not None:
+        if ANDROID and app != int(ANDROID):
+            return True
+        if not ANDROID and app == STEAM_UI:
+            return True
+    for win in root.query_tree().children:
+        try:
+            if card(win, atoms["STEAM_OVERLAY"]) and card(win, atoms["STEAM_INPUT_FOCUS"]):
+                return True
+        except Exception:
+            continue    # window went away while being read
+    return False
+
+
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 flag(False)
+d = display.Display(":0")
+root = d.screen().root
+atoms = {n: d.intern_atom(n) for n in
+         ("GAMESCOPE_FOCUSED_APP", "STEAM_OVERLAY", "STEAM_INPUT_FOCUS")}
 seen_cage = False   # the launcher starts this before cage is up
+last = None
+next_cage = 0.0
 try:
     while True:
-        ready, _, _ = select.select([spy.stdout], [], [], 1.0)
-        if ready:
-            line = spy.stdout.readline()
-            if not line:
+        now = time.monotonic()
+        if now >= next_cage:
+            next_cage = now + 1
+            up = cage_up()
+            if seen_cage and not up:
                 break
-            if "=" in line:
-                app = line.rsplit("=", 1)[-1].strip()
-                flag(app != ANDROID if ANDROID else app == STEAM_UI)
-        up = cage_up()
-        if seen_cage and not up:
-            break
-        seen_cage = seen_cage or up
+            seen_cage = seen_cage or up
+        state = blocked(d, root, atoms)
+        if state != last:
+            flag(state)
+            last = state
+        time.sleep(0.2)
 finally:
     flag(False)
-    spy.kill()
 GATE
     chmod 755 /usr/local/bin/atv-input-gate
 
@@ -1334,7 +1363,7 @@ LAUNCH
 atv_install() {
     say "Android TV (Waydroid) for game mode"
 
-    pacman -S --needed --noconfirm waydroid cage wlr-randr unzip xorg-xprop
+    pacman -S --needed --noconfirm waydroid cage wlr-randr unzip python-xlib
 
     # Download the WayDroid-ATV system and vendor images from its OTA channel;
     # waydroid init fetches and verifies them itself. Zips already sitting in
