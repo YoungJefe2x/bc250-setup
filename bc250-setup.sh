@@ -1118,9 +1118,39 @@ def purge(paths):
     if paths and own_dev_input():
         try:
             shell("rm", "-f", *sorted(paths))
+            print("removed from Android:", *sorted(paths), flush=True)
         except (OSError, subprocess.SubprocessError):
             pass
 
+
+def sweep(hidden):
+    """Check Android's own /dev/input and drop anything that is not allowed.
+
+    Reconnects are caught as they happen, but Android can create a node
+    later than expected; this catches whatever got past that.
+    """
+    try:
+        listing = shell("ls", "/dev/input").stdout.split()
+    except (OSError, subprocess.SubprocessError):
+        return
+    extra = []
+    for node in listing:
+        if not node.startswith("event"):
+            continue
+        path = "/dev/input/" + node
+        if not os.path.exists(path):
+            continue    # not a host device; leave Android's own alone
+        if hidden or not name(path).startswith(PAD):
+            extra.append(path)
+    if extra and own_dev_input():
+        try:
+            shell("rm", "-f", *sorted(extra))
+            print("removed from Android:", *sorted(extra), flush=True)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+SWEEP_EVERY = 3.0
 
 fds = {}            # fd -> path, Steam pads held open
 down = {}           # (fd, button) -> time it went down, None once fired
@@ -1130,8 +1160,13 @@ purges = []         # (when, paths)
 hidden = False      # Steam's pad is out of Android while another app is in front
 next_scan = 0.0
 next_flag = 0.0
+next_sweep = 0.0
 while True:
     now = time.monotonic()
+    if now >= next_sweep:
+        next_sweep = now + SWEEP_EVERY
+        if android_up():
+            sweep(hidden)
     if now >= next_flag:
         next_flag = now + 0.2
         up_now = android_up()
