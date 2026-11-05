@@ -1166,6 +1166,15 @@ UNIT
     cat > "$REAL_HOME/waydroid-tv.sh" << 'LAUNCH'
 #!/bin/bash
 # Android TV (Waydroid) launcher for game mode
+# Exit Game in Steam ends this whole process tree, so a plain stop at the end
+# never runs and Android keeps reading the controller in the background. Stop
+# the session on any exit, from a detached process Steam does not track.
+stop_android() {
+  trap - EXIT HUP INT TERM
+  setsid -f /usr/bin/waydroid session stop >/dev/null 2>&1 < /dev/null
+}
+trap stop_android EXIT
+trap 'stop_android; exit 0' HUP INT TERM
 cage -- bash -c '
   OUT=$(wlr-randr | head -1 | cut -d" " -f1)
   wlr-randr --output "$OUT" --custom-mode 1920x1080 2>/dev/null
@@ -1180,8 +1189,8 @@ cage -- bash -c '
         ;;
     esac
   done
-'
-waydroid session stop
+' &
+wait $!
 LAUNCH
     chmod +x "$REAL_HOME/waydroid-tv.sh"
     chown "$REAL_USER" "$REAL_HOME/waydroid-tv.sh"
