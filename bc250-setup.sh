@@ -1163,6 +1163,94 @@ UNIT
     systemctl restart atv-home-button.service || \
         warn "check: systemctl status atv-home-button"
 
+    # Steam's menu opens over Android TV without stopping it, and Android
+    # reads Steam's virtual pad directly, so it would keep acting on every
+    # press made in the menu. While gamescope reports the Steam UI (app 769)
+    # as focused, this holds an exclusive grab on the pad so Android gets
+    # nothing; focus back on Android TV releases it. Runs as the user (the pad
+    # is user-accessible) and is started by the launcher.
+    command -v xprop >/dev/null 2>&1 || \
+        pacman -S --needed --noconfirm xorg-xprop || warn "xorg-xprop install failed"
+    cat > /usr/local/bin/atv-input-gate << 'GATE'
+#!/usr/bin/env python3
+"""Keep Steam's virtual pad away from Android TV while the Steam UI has focus.
+
+While gamescope's GAMESCOPE_FOCUSED_APP is 769 (Steam's own UI), take an
+exclusive grab (EVIOCGRAB) on every "Microsoft X-Box 360 pad" node, so
+Android reads nothing; release it once anything else has focus. Steam
+presents Xbox and PlayStation controllers alike through that pad. Pad nodes
+are rescanned every second because they are recreated when a controller
+reconnects. Exits when Android TV (cage) closes or gamescope goes away.
+"""
+import fcntl, glob, os, select, subprocess
+
+EVIOCGRAB = 0x40044590
+STEAM_UI = "769"
+PAD = "Microsoft X-Box 360 pad"
+
+
+def pads():
+    out = set()
+    for path in glob.glob("/dev/input/event*"):
+        try:
+            with open(f"/sys/class/input/{os.path.basename(path)}/device/name") as f:
+                if f.read().startswith(PAD):
+                    out.add(path)
+        except OSError:
+            pass
+    return out
+
+
+def cage_up():
+    return subprocess.run(["pgrep", "-x", "cage"], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode == 0
+
+
+spy = subprocess.Popen(["xprop", "-root", "-spy", "GAMESCOPE_FOCUSED_APP"],
+                       env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0")},
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+grabbed = {}        # path -> fd
+block = False
+seen_cage = False   # the launcher starts this before cage is up
+while True:
+    ready, _, _ = select.select([spy.stdout], [], [], 1.0)
+    if ready:
+        line = spy.stdout.readline()
+        if not line:
+            break
+        block = line.strip().endswith("= " + STEAM_UI)
+    up = cage_up()
+    if seen_cage and not up:
+        break
+    seen_cage = seen_cage or up
+    want = pads() if block else set()
+    for path in list(grabbed):
+        if path not in want:
+            try:
+                fcntl.ioctl(grabbed[path], EVIOCGRAB, 0)
+            except OSError:
+                pass
+            os.close(grabbed.pop(path))
+    for path in want - grabbed.keys():
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            continue
+        try:
+            fcntl.ioctl(fd, EVIOCGRAB, 1)
+            grabbed[path] = fd
+        except OSError:
+            os.close(fd)
+    for fd in grabbed.values():  # drain, so the kernel buffer never fills
+        try:
+            while os.read(fd, 4096):
+                pass
+        except OSError:
+            pass
+spy.kill()
+GATE
+    chmod 755 /usr/local/bin/atv-input-gate
+
     cat > "$REAL_HOME/waydroid-tv.sh" << 'LAUNCH'
 #!/bin/bash
 # Android TV (Waydroid) launcher for game mode
@@ -1171,8 +1259,12 @@ UNIT
 # the session on any exit, from a detached process Steam does not track.
 stop_android() {
   trap - EXIT HUP INT TERM
+  kill "$GATE" 2>/dev/null
   setsid -f /usr/bin/waydroid session stop >/dev/null 2>&1 < /dev/null
 }
+# Cut Android off from the controller while the Steam menu has focus.
+/usr/local/bin/atv-input-gate &
+GATE=$!
 trap stop_android EXIT
 trap 'stop_android; exit 0' HUP INT TERM
 cage -- bash -c '
@@ -1200,7 +1292,7 @@ LAUNCH
 atv_install() {
     say "Android TV (Waydroid) for game mode"
 
-    pacman -S --needed --noconfirm waydroid cage wlr-randr unzip
+    pacman -S --needed --noconfirm waydroid cage wlr-randr unzip xorg-xprop
 
     # Download the WayDroid-ATV system and vendor images from its OTA channel;
     # waydroid init fetches and verifies them itself. Zips already sitting in
@@ -1270,7 +1362,8 @@ atv_revert() {
     rm -f /etc/systemd/system/atv-home-button.service
     systemctl daemon-reload
     rm -f /etc/sudoers.d/waydroid-udev "$REAL_HOME/waydroid-tv.sh" \
-          /usr/local/bin/atv-home-button /usr/local/bin/atv-home-combo
+          /usr/local/bin/atv-home-button /usr/local/bin/atv-home-combo \
+          /usr/local/bin/atv-input-gate
 
     if confirm "Delete Android data and images too? (apps, logins, everything)"; then
         rm -rf /var/lib/waydroid "$REAL_HOME/.local/share/waydroid" "$WAYDROID_IMG_DIR"
@@ -3026,6 +3119,7 @@ show_status() {
     else _none "waydroid" "not installed"; fi
     _unit_line "waydroid-container" waydroid-container.service "$_w"
     _file_line "launcher" "$REAL_HOME/waydroid-tv.sh" "$_w"
+    _file_line "menu input gate" /usr/local/bin/atv-input-gate "$_w"
     _file_line "sudoers rule" /etc/sudoers.d/waydroid-udev "$_w"
     echo
     item 6 "Apps: Xbox Cloud Gaming" "$(status xcloud)"
