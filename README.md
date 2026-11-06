@@ -32,6 +32,23 @@ sudo sh bc250-setup.sh
 Take a snapper snapshot before the first run. Install components one at a
 time rather than `a` until you know each works on that box.
 
+### Bazzite and other Fedora Atomic systems
+
+The script also runs on image-based Fedora systems such as Bazzite. It
+detects them by `/run/ostree-booted` and then:
+
+- installs missing packages by layering them onto the image with
+  `rpm-ostree install` (Fedora package names; applied live when possible,
+  otherwise the option asks for a reboot and to be run again);
+- installs Discord for Discord Deck from Flathub;
+- hides option 7 (AUR packages) and option 8 (Limine boot menu), which only
+  exist on CachyOS/Arch.
+
+Everything else writes to `/etc`, `/var` and `/usr/local`, which stay
+writable on these systems. Install Decky Loader first with Bazzite's
+`ujust setup-decky` or let option 5 run the official installer.
+`bc250-setup.sh --os` prints the detected system and the options it hides.
+
 ## Components
 
 ### 1. HDMI-CEC TV control
