@@ -143,7 +143,7 @@ needed:
 | Plugin | What it does |
 |---|---|
 | BC-250 Lighting | WS2812B strip and Nollie fan zones; turns both off after a set time with no controller input and nothing playing |
-| System Updates | CachyOS updates and notifications from game mode |
+| System Updates | System updates and notifications from game mode (CachyOS or Bazzite, detected by itself) |
 | Discord Deck | Voice channels, friends and direct calls, audio device switching, speaking indicators |
 | CEC Remote | TV/soundbar volume and mute, TV power, switch the TV to this box |
 
