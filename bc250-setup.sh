@@ -103,7 +103,7 @@ header() {
     [ -t 1 ] && printf '\033[H\033[2J'
     echo
     printf '  %s%sBC-250 setup%s  %s%s%s\n' "$C_BOLD" "$C_CYAN" "$C_RESET" "$C_DIM" "$1" "$C_RESET"
-    printf '  %s%s  ·  kernel %s%s\n' "$C_DIM" "$(uname -n)" "$(uname -r)" "$C_RESET"
+    printf '  %s%s  ·  %s  ·  kernel %s%s\n' "$C_DIM" "$(uname -n)" "${OS_NAME:-Linux}" "$(uname -r)" "$C_RESET"
     rule
 }
 
@@ -116,12 +116,92 @@ item() {
     fi
 }
 
+# ------------------------------------------------------------- the system ---
+
+# Two kinds of system: CachyOS/Arch (pacman, AUR, Limine) and image-based
+# Fedora Atomic such as Bazzite (rpm-ostree, read-only /usr, GRUB). /etc,
+# /var and /usr/local stay writable on the latter, so everything this script
+# writes lands the same way on both; only package installs differ.
+OS_NAME=$(sed -n 's/^PRETTY_NAME="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' /etc/os-release 2>/dev/null | head -n 1)
+if [ -e /run/ostree-booted ] && command -v rpm-ostree >/dev/null 2>&1; then
+    OS_KIND=atomic
+else
+    OS_KIND=arch
+fi
+is_atomic() { [ "$OS_KIND" = atomic ]; }
+
+# Arch package name -> Fedora package names ("" = nothing to install there).
+fedora_pkg() {
+    case "$1" in
+        base-devel)        echo "gcc-c++ make" ;;
+        python-esptool)    echo "" ;;
+        python-pip)        echo "python3-pip" ;;
+        python-evdev)      echo "python3-evdev" ;;
+        python-xlib)       echo "python3-xlib" ;;
+        python-gobject)    echo "python3-gobject" ;;
+        python-cairo)      echo "python3-cairo" ;;
+        xorg-xprop)        echo "xprop" ;;
+        fuse2)             echo "fuse-libs" ;;
+        webkit2gtk-4.1)    echo "webkit2gtk4.1" ;;
+        libxtst)           echo "libXtst" ;;
+        github-cli)        echo "gh" ;;
+        discord|paru)      echo "" ;;
+        *)                 echo "$1" ;;
+    esac
+}
+
+# pkg_install <arch names...>: install what is missing. On an image-based
+# system the missing ones are layered onto the image with rpm-ostree, applied
+# live when it can; otherwise they arrive with the next boot and this returns
+# 1 so the caller stops until then.
+pkg_install() {
+    if ! is_atomic; then
+        pacman -S --needed --noconfirm "$@"
+        return
+    fi
+    _pk_missing=""
+    for _pk_a in "$@"; do
+        for _pk_f in $(fedora_pkg "$_pk_a"); do
+            rpm -q --whatprovides "$_pk_f" >/dev/null 2>&1 || _pk_missing="$_pk_missing $_pk_f"
+        done
+    done
+    [ -n "$_pk_missing" ] || return 0
+    say "Adding to the system image:$_pk_missing"
+    # shellcheck disable=SC2086  # a word list on purpose
+    if rpm-ostree install -y --idempotent --allow-inactive --apply-live $_pk_missing; then
+        return 0
+    fi
+    # shellcheck disable=SC2086
+    if rpm-ostree install -y --idempotent --allow-inactive $_pk_missing; then
+        warn "Added, but they only arrive after a reboot. Reboot, then run this option again."
+    else
+        warn "Couldn't add$_pk_missing to the system image."
+    fi
+    return 1
+}
+
+# Options that only exist on CachyOS/Arch: the AUR build and the Limine boot
+# menu (Bazzite and other Fedora Atomic systems boot with GRUB).
+UNSUPPORTED_ATOMIC="ctlcenter boot"
+os_supports() {
+    is_atomic || return 0
+    case " $UNSUPPORTED_ATOMIC " in *" $1 "*) return 1 ;; esac
+    return 0
+}
+not_here() { warn "Not available on $OS_NAME: this option is for CachyOS/Arch only."; }
+
+# pkg_owner <file>: the package that owns a file, if any.
+pkg_owner() {
+    if is_atomic; then rpm -qf --qf '%{NAME}\n' "$1" 2>/dev/null
+    else pacman -Qqo "$1" 2>/dev/null; fi
+}
+
 # ----------------------------------------------------------- dependencies ---
 
 # Packages more than one component needs.
 ensure_base() {
     say "Installing base dependencies"
-    pacman -S --needed --noconfirm base-devel git curl unzip
+    pkg_install base-devel git curl unzip
 }
 
 have_esptool() {
@@ -133,9 +213,9 @@ have_esptool() {
 install_esptool() {
     have_esptool && return 0
     say "Installing esptool"
-    pacman -S --needed --noconfirm python-esptool 2>/dev/null || true
+    pkg_install python-esptool 2>/dev/null || true
     have_esptool && return 0
-    pacman -S --needed --noconfirm python-pip 2>/dev/null || true
+    pkg_install python-pip 2>/dev/null || true
     pip install --break-system-packages esptool 2>/dev/null || true
     have_esptool
 }
@@ -153,7 +233,7 @@ decky_loader_install() {
     say "Installing Decky Loader"
     say "This runs the official installer as $REAL_USER; it will ask for a password."
     confirm "Continue?" || return 1
-    pacman -S --needed --noconfirm curl
+    pkg_install curl
     runuser -u "$REAL_USER" -- sh -c \
         'curl -L https://github.com/SteamDeckHomebrew/decky-installer/releases/latest/download/install_release.sh | sh' \
         || { warn "Decky Loader install failed"; return 1; }
@@ -182,7 +262,7 @@ cec_install() {
         confirm "Install anyway (it will work once /dev/cec0 appears)?" y || return 1
     fi
 
-    pacman -S --needed --noconfirm v4l-utils
+    pkg_install v4l-utils
 
     cat > /usr/local/bin/cec-tv << 'SCRIPT'
 #!/bin/sh
@@ -788,7 +868,7 @@ guide_install() {
         confirm "Install anyway?" y || return 1
     fi
 
-    pacman -S --needed --noconfirm python-evdev
+    pkg_install python-evdev
 
     cat > /usr/local/bin/cec-guide-watch << 'SCRIPT'
 #!/usr/bin/env python3
@@ -1262,8 +1342,8 @@ UNIT
     # Android TV is not what the controller is driving;
     # atv-home-button (root) then takes the pad out of Android only, so the
     # app in front keeps it. Started by the launcher.
-    pacman -Q python-xlib >/dev/null 2>&1 || \
-        pacman -S --needed --noconfirm python-xlib || warn "python-xlib install failed"
+    python3 -c 'import Xlib' >/dev/null 2>&1 || \
+        pkg_install python-xlib || warn "python-xlib install failed"
     cat > /usr/local/bin/atv-input-gate << 'GATE'
 #!/usr/bin/env python3
 """Flag when Android TV is not what the controller is driving.
@@ -1394,7 +1474,7 @@ LAUNCH
 atv_install() {
     say "Android TV (Waydroid) for game mode"
 
-    pacman -S --needed --noconfirm waydroid cage wlr-randr unzip python-xlib
+    pkg_install waydroid cage wlr-randr unzip python-xlib
 
     # Download the WayDroid-ATV system and vendor images from its OTA channel;
     # waydroid init fetches and verifies them itself. Zips already sitting in
@@ -1472,7 +1552,7 @@ atv_revert() {
         rmdir /etc/waydroid-extra 2>/dev/null || true
         rm -f "$REAL_HOME"/.local/share/applications/waydroid.*.desktop
     fi
-    if confirm "Uninstall the waydroid, cage and wlr-randr packages?"; then
+    if ! is_atomic && confirm "Uninstall the waydroid, cage and wlr-randr packages?"; then
         pacman -Rns --noconfirm waydroid cage wlr-randr || warn "package removal failed"
     fi
     unmark atv
@@ -1568,7 +1648,7 @@ LAUNCH
 # edge_ensure: Microsoft Edge from Flathub, installed if missing.
 edge_ensure() {
     flatpak_has "$XCLOUD_BROWSER" && return 0
-    pacman -S --needed --noconfirm flatpak
+    pkg_install flatpak
     flatpak remote-add --if-not-exists flathub \
         https://dl.flathub.org/repo/flathub.flatpakrepo
     flatpak install -y --noninteractive flathub "$XCLOUD_BROWSER" || {
@@ -1693,7 +1773,7 @@ LAUNCH
 jd_install() {
     say "JDownloader 2"
     if ! flatpak_has "$JD_APP"; then
-        command -v flatpak >/dev/null 2>&1 || pacman -S --needed --noconfirm flatpak || return 1
+        command -v flatpak >/dev/null 2>&1 || pkg_install flatpak || return 1
         flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
         flatpak install -y --noninteractive flathub "$JD_APP" || {
             warn "JDownloader install failed"
@@ -1782,7 +1862,7 @@ nexus_install() {
     say "Xodus Nexus (PC Game Pass / Microsoft Store)"
     # What its own installer pulls in on Arch: FUSE for the AppImage, and the
     # libraries for its Electron window and the sign-in backend.
-    pacman -S --needed --noconfirm curl tar xz fuse2 webkit2gtk-4.1 gtk3 nss \
+    pkg_install curl tar xz fuse2 webkit2gtk-4.1 gtk3 nss \
         libxtst desktop-file-utils || warn "Some Xodus Nexus libraries didn't install"
     nexus_fetch || return 1
     nexus_write_launcher
@@ -1969,7 +2049,7 @@ user_systemctl() {
 
 streamres_install() {
     say "Steam Link at 1080p"
-    pacman -S --needed --noconfirm xorg-xprop || return 1
+    pkg_install xorg-xprop || return 1
     streamres_write_files
     systemctl --global enable bc250-stream-res.service
     user_systemctl daemon-reload 2>/dev/null || true
@@ -2049,7 +2129,7 @@ FISH
 # "npm <who>" lines, one per copy found.
 claude_unmanaged() {
     for _f in /usr/bin/claude /usr/local/bin/claude; do
-        _p=$(pacman -Qqo "$_f" 2>/dev/null) && echo "pacman $_p"
+        _p=$(pkg_owner "$_f") && [ -n "$_p" ] && echo "pacman $_p"
     done | sort -u
     if command -v npm >/dev/null 2>&1; then
         npm ls -g --depth=0 "$CLAUDE_NPM_PKG" >/dev/null 2>&1 && echo "npm root"
@@ -2066,7 +2146,7 @@ claude_install() {
         warn "Run this script with sudo from your normal account, not a root shell."
         return 1
     fi
-    pacman -S --needed --noconfirm curl || return 1
+    pkg_install curl || return 1
 
     say "Installing the native, self-updating Claude Code as $REAL_USER"
     if ! runuser -u "$REAL_USER" -- env HOME="$REAL_HOME" \
@@ -2078,7 +2158,11 @@ claude_install() {
     # Older copies would keep shadowing the native one on PATH.
     claude_unmanaged | while read -r _how _what; do
         case "$_how" in
-            pacman) say "Removing package $_what (it never updates itself)"
+            pacman) if is_atomic; then
+                        warn "Package $_what also provides claude; remove it with: sudo rpm-ostree uninstall $_what"
+                        continue
+                    fi
+                    say "Removing package $_what (it never updates itself)"
                     pacman -Rns --noconfirm "$_what" ||
                         warn "removal failed; try: sudo pacman -Rns $_what" ;;
             npm)    say "Removing the npm copy of Claude Code"
@@ -2162,6 +2246,7 @@ aur_build_install() {
 
 ctlcenter_install() {
     say "BC-250 Control Center"
+    os_supports ctlcenter || { not_here; return 1; }
 
     helper=""
     for h in paru yay pikaur trizen; do
@@ -2204,6 +2289,7 @@ ctlcenter_install() {
 }
 
 ctlcenter_revert() {
+    os_supports ctlcenter || { unmark ctlcenter; return 0; }
     say "Removing BC-250 Control Center"
     if pacman -Qq bc250-control-center-git >/dev/null 2>&1; then
         pacman -Rns --noconfirm bc250-control-center-git || \
@@ -2224,6 +2310,7 @@ ctlcenter_revert() {
 AUR_PULLED_IN="cyan-skillfish-governor-smu umr umr-git"
 
 aur_menu() {
+    os_supports ctlcenter || { not_here; pause; return 0; }
     while :; do
         header "AUR packages"
         printf '  %sBuilt from the AUR as your user. Pick an installed one to remove it.%s\n\n' "$C_DIM" "$C_RESET"
@@ -2293,6 +2380,7 @@ limine_set() {
 
 boot_install() {
     say "Quick, quiet boot menu"
+    os_supports boot || { not_here; return 1; }
     if ! _conf=$(limine_conf); then
         warn "No limine.conf found; this only works with the Limine boot loader."
         return 1
@@ -2309,6 +2397,7 @@ boot_install() {
 }
 
 boot_revert() {
+    os_supports boot || { unmark boot; return 0; }
     say "Restoring the Limine boot menu"
     if ! _conf=$(limine_conf); then
         warn "No limine.conf found."
@@ -2549,7 +2638,7 @@ cecfix_install() {
         fi
         return 1
     fi
-    command -v patch >/dev/null 2>&1 || pacman -S --needed --noconfirm patch
+    command -v patch >/dev/null 2>&1 || pkg_install patch
     _dir=$(mktemp -d)
     cecfix_patch > "$_dir/fix.patch"
     if ! patch -s --fuzz=0 -o "$_dir/daemon.sh" "$CECFIX_SRC" "$_dir/fix.patch" >/dev/null 2>&1 ||
@@ -2627,7 +2716,7 @@ plugin_packages_install() {
     _pp=$(plugin_packages "$1")
     [ -n "$_pp" ] || return 0
     # shellcheck disable=SC2086  # a word list on purpose
-    pacman -S --needed --noconfirm $_pp ||
+    pkg_install $_pp ||
         warn "could not install $_pp for $(embedded_label "$1")"
 }
 
@@ -2637,7 +2726,7 @@ EMBEDDED_PLUGINS="bc250-lighting system-updates discord-deck cec-remote"
 embedded_label() {
     case "$1" in
         bc250-lighting) echo "BC-250 Lighting (LED strip + fan zones, idle off)" ;;
-        system-updates) echo "System Updates (CachyOS updates from game mode)" ;;
+        system-updates) echo "System Updates (system and app updates from game mode)" ;;
         discord-deck) echo "Discord Deck (voice chat, audio devices, speaking overlay)" ;;
         cec-remote) echo "CEC Remote (TV/soundbar volume, power, input)" ;;
     esac
@@ -2838,7 +2927,8 @@ JSON
 }
 
 # Discord Deck drives the Discord app, so make sure one is installed. Any
-# Flatpak or native client the plugin knows counts; otherwise install Arch's.
+# Flatpak or native client the plugin knows counts; otherwise install Arch's,
+# or the Flathub one on an image-based system.
 discord_client() {
     for _b in discord discord-canary discord-ptb vesktop; do
         command -v "$_b" >/dev/null 2>&1 && return 0
@@ -2849,6 +2939,12 @@ discord_client() {
         return 0
     fi
     say "Installing Discord"
+    if is_atomic; then
+        flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
+        flatpak install -y --noninteractive flathub com.discordapp.Discord ||
+            warn "could not install Discord; install it yourself before using Discord Deck"
+        return 0
+    fi
     pacman -S --needed --noconfirm discord ||
         warn "could not install Discord; install it yourself before using Discord Deck"
 }
@@ -3047,7 +3143,7 @@ decky_ready() {
 decky_install() {
     say "Decky plugins"
     decky_ready || return 1
-    pacman -S --needed --noconfirm unzip
+    pkg_install unzip
     say "Checking what's on offer"
     decky_catalog
     _changed=0
@@ -3077,7 +3173,7 @@ decky_finish() {
 
 decky_menu() {
     decky_ready || { pause; return; }
-    pacman -S --needed --noconfirm unzip >/dev/null 2>&1 || true
+    pkg_install unzip >/dev/null 2>&1 || true
     say "Checking what's on offer"
     decky_catalog
     _changed=0
@@ -3340,28 +3436,32 @@ show_status() {
 
     # ---- 7. AUR packages
     echo
-    item 7 "AUR: BC-250 Control Center" "$(status ctlcenter)"
-    if pacman -Qq bc250-control-center-git >/dev/null 2>&1; then
-        _ok "package" "$(pacman -Q bc250-control-center-git 2>/dev/null)"
-    elif is_done ctlcenter; then
-        _bad "package" "marked installed but not present"
-    else
-        _none "package" "not installed"
+    if os_supports ctlcenter; then
+        item 7 "AUR: BC-250 Control Center" "$(status ctlcenter)"
+        if pacman -Qq bc250-control-center-git >/dev/null 2>&1; then
+            _ok "package" "$(pacman -Q bc250-control-center-git 2>/dev/null)"
+        elif is_done ctlcenter; then
+            _bad "package" "marked installed but not present"
+        else
+            _none "package" "not installed"
+        fi
     fi
 
     # ---- 8. Quick boot
-    echo
-    item 8 "Quick, quiet boot menu" "$(status boot)"
-    if _conf=$(limine_conf); then
-        _t=$(sed -n 's/^[[:space:]]*timeout:[[:space:]]*//p' "$_conf" | head -n 1)
-        _q=$(sed -n 's/^[[:space:]]*quiet:[[:space:]]*//p' "$_conf" | head -n 1)
-        if is_done boot && { [ "$_t" != 1 ] || [ "$_q" != yes ]; }; then
-            _bad "limine.conf" "timeout ${_t:-unset}, quiet ${_q:-unset} (expected 1, yes)"
+    if os_supports boot; then
+        echo
+        item 8 "Quick, quiet boot menu" "$(status boot)"
+        if _conf=$(limine_conf); then
+            _t=$(sed -n 's/^[[:space:]]*timeout:[[:space:]]*//p' "$_conf" | head -n 1)
+            _q=$(sed -n 's/^[[:space:]]*quiet:[[:space:]]*//p' "$_conf" | head -n 1)
+            if is_done boot && { [ "$_t" != 1 ] || [ "$_q" != yes ]; }; then
+                _bad "limine.conf" "timeout ${_t:-unset}, quiet ${_q:-unset} (expected 1, yes)"
+            else
+                _ok "limine.conf" "timeout ${_t:-unset}, quiet ${_q:-no}"
+            fi
         else
-            _ok "limine.conf" "timeout ${_t:-unset}, quiet ${_q:-no}"
+            _none "limine.conf" "not found"
         fi
-    else
-        _none "limine.conf" "not found"
     fi
 
     # ---- 9. Steam Link at 1080p
@@ -3490,7 +3590,7 @@ self_update() {
         rm -f "$_new"
         warn "Could not download the script."
         warn "The repo is private, so a plain download needs it to be public,"
-        warn "or gh signed in on this box:  sudo pacman -S github-cli && gh auth login"
+        warn "or gh signed in on this box:  sudo pacman -S github-cli && gh auth login (on CachyOS)"
         return 1
     fi
 
@@ -3581,7 +3681,7 @@ install_all() {
     led_install   || warn "led failed"
     power_install || warn "power failed"
     guide_install || warn "guide failed"
-    boot_install  || warn "quick boot failed"
+    if os_supports boot; then boot_install || warn "quick boot failed"; fi
     streamres_install || warn "steam link 1080p failed"
     atv_install   || warn "android tv failed"
     xcloud_install || warn "xbox cloud gaming failed"
@@ -3598,8 +3698,8 @@ revert_menu() {
         item 4 "Guide button -> input"   "$(status guide)"
         item 5 "Decky plugins"           "$(status decky)"
         item 6 "Apps"                    "$(apps_status)"
-        item 7 "AUR packages"            "$(status ctlcenter)"
-        item 8 "Quick, quiet boot menu"  "$(status boot)"
+        if os_supports ctlcenter; then item 7 "AUR packages" "$(status ctlcenter)"; fi
+        if os_supports boot; then item 8 "Quick, quiet boot menu" "$(status boot)"; fi
         item 9 "Steam Link at 1080p"     "$(status streamres)"
         item c "Claude Code auto-update" "$(status claude)"
         echo
@@ -3664,8 +3764,8 @@ main_menu() {
         item 4 "Guide button -> input"   "$(status guide)"
         item 5 "Decky plugins"           "$(status decky)"
         item 6 "Apps"                    "$(apps_status)"
-        item 7 "AUR packages"            "$(status ctlcenter)"
-        item 8 "Quick, quiet boot menu"  "$(status boot)"
+        if os_supports ctlcenter; then item 7 "AUR packages" "$(status ctlcenter)"; fi
+        if os_supports boot; then item 8 "Quick, quiet boot menu" "$(status boot)"; fi
         item 9 "Steam Link at 1080p"     "$(status streamres)"
         item c "Claude Code auto-update" "$(status claude)"
         item x "Experiments"             "$(status cecfix)"
@@ -9905,7 +10005,8 @@ setup_action() {
         install:nexus)     nexus_install ;;
         # The AUR helper would ask for a password; build it the way
         # --update-ctlcenter does instead.
-        install:ctlcenter) aur_build_install bc250-control-center-git && mark ctlcenter ;;
+        install:ctlcenter) os_supports ctlcenter || { not_here; return 1; }
+                           aur_build_install bc250-control-center-git && mark ctlcenter ;;
         install:boot)      boot_install ;;
         install:streamres) streamres_install ;;
         install:claude)    claude_install ;;
@@ -9950,7 +10051,7 @@ decky_plugin_action() {
         return 2
     fi
     decky_present || { warn "Decky Loader isn't installed."; return 1; }
-    pacman -S --needed --noconfirm unzip >/dev/null 2>&1 || true
+    pkg_install unzip >/dev/null 2>&1 || true
     decky_catalog
     _n=$(wc -l < "$DECKY_CATALOG")
     _i=1 _hit=0 _rc=0
@@ -9989,11 +10090,18 @@ case "${1:-}" in
         exit 0 ;;
     --update-ctlcenter)
         UNATTENDED=1
+        os_supports ctlcenter || { not_here; exit 1; }
         aur_build_install bc250-control-center-git || exit 1
         exit 0 ;;
     --update-nexus)
         UNATTENDED=1
         nexus_fetch || exit 1
+        exit 0 ;;
+    --os)
+        # For System Updates: the kind of system, then the option markers
+        # that don't exist on it.
+        printf 'OS\t%s\t%s\n' "$OS_KIND" "$OS_NAME"
+        if is_atomic; then printf 'UNSUPPORTED\t%s\n' "$UNSUPPORTED_ATOMIC"; else printf 'UNSUPPORTED\t\n'; fi
         exit 0 ;;
     --install|--remove)
         UNATTENDED=1
