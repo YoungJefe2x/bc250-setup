@@ -211,6 +211,7 @@ again when the app is removed here):
 | GeForce NOW | Microsoft Edge (Flatpak) full screen on play.geforcenow.com, launched by `~/geforce-now.sh`. NVIDIA's own Linux app can't run on the BC-250 (it needs a Vulkan video-decode queue the GPU lacks), so video is decoded on the CPU |
 | Discord | Whichever Discord client is installed (Arch's `discord` if none), launched by `~/discord.sh` |
 | JDownloader 2 | JDownloader 2 (Flatpak), launched by `~/jdownloader.sh`. Its shortcut gets a mouse-style controller layout: right stick moves the pointer, right trigger or A/Cross clicks, left trigger right-clicks, left stick scrolls, B/Circle goes back, X/Square pastes links, Y/Triangle opens the keyboard |
+| Xodus Nexus | [Xodus Nexus](https://github.com/domsvoboda/xodus-nexus), an open-source launcher for PC Game Pass and Microsoft Store games. Its AppImage from the latest GitHub release (checked against its SHA-512) goes to `~/.local/opt/xodus-nexus`, launched by `~/xodus-nexus.sh`. System Updates offers each new release. On first start, install the backend and the Nexus runtime from its Settings, then sign in with a Microsoft account |
 
 In Xbox Cloud Gaming and GeForce NOW, press View and Menu together for the Xbox button, since Steam keeps the real one for itself in game mode. A small Edge add-on that the launchers load handles this.
 
